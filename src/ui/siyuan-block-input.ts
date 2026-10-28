@@ -6,6 +6,15 @@
  * modern AI chat interfaces.
  */
 
+import {
+    Atom,
+    Brain,
+    createElement,
+    Image,
+    Send,
+    ShieldCheck,
+    Square,
+} from "lucide";
 import { Protyle, type App } from "siyuan";
 import { escapeHtml } from "./markdown";
 
@@ -30,18 +39,50 @@ export interface SiYuanBlockInputOptions {
     onStop: () => void;
 }
 
-// Paper-plane outline icon matching the reference screenshot
-const PAPER_PLANE_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>`;
+// Official Lucide icons rendered directly via Lucide's createElement
+// Enforce fill: none !important so SiYuan theme CSS doesn't accidentally fill outline strokes
+const PAPER_PLANE_SVG = createElement(Send, {
+    width: 15,
+    height: 15,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
 
-const STOP_SQUARE_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"></rect></svg>`;
+const STOP_SQUARE_SVG = createElement(Square, {
+    width: 14,
+    height: 14,
+    "stroke-width": 1.75,
+    fill: "currentColor",
+    style: "fill: currentColor !important; stroke: none !important;",
+}).outerHTML;
 
-const NOTE_LINK_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`;
+const NOTE_LINK_SVG = createElement(Image, {
+    width: 15,
+    height: 15,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
 
-const SHIELD_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>`;
+const SHIELD_ICON_SVG = createElement(ShieldCheck, {
+    width: 14,
+    height: 14,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
 
-const ATOM_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"></circle><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(30 12 12)"></ellipse><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(150 12 12)"></ellipse></svg>`;
+const ATOM_ICON_SVG = createElement(Atom, {
+    width: 14,
+    height: 14,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
 
-const BRAIN_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"></path></svg>`;
+const BRAIN_ICON_SVG = createElement(Brain, {
+    width: 14,
+    height: 14,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
 
 export class SiYuanBlockInput {
     private container: HTMLElement;
