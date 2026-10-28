@@ -242,6 +242,62 @@ export class SidebarView {
         this.blockInput = new SiYuanBlockInput(this.blockInputContainerEl, {
             app: this.callbacks.app,
             placeholder: "Write a message, press / for blocks, (( to reference notes...",
+            getPillsState: () => {
+                const chat = this.getActiveChat();
+                const s = this.stores.settingsStore.get();
+                const provider = chat?.settings?.provider ?? s.activeProvider;
+                const modelLabel =
+                    chat?.settings?.modelId ??
+                    (provider === "deepseek"
+                        ? s.deepseekModel
+                        : provider === "gemini"
+                          ? s.geminiModel
+                          : s.customModel);
+                const modeLabel = chat?.kind === "practice" ? "Practice mode" : "Teach mode";
+                const mechanicLabel = s.quizzingMechanic === "explain" ? "Explain" : "Quiz";
+                return { modeLabel, modelLabel, mechanicLabel };
+            },
+            onAttachActiveNote: () => {
+                const activeTitle = document.querySelector(
+                    ".layout__wnd--active .protyle:not(.fn__none) .protyle-title, .protyle:not(.fn__none) .protyle-title",
+                ) as HTMLElement | null;
+                const docId = activeTitle?.dataset?.nodeId;
+                if (!docId) {
+                    showMessage("Open a SiYuan note first to insert it.", 2500, "info");
+                    return;
+                }
+                void this.insertBlockIntoInput(docId);
+            },
+            onToggleMode: () => {
+                const chat = this.getActiveChat();
+                if (!chat) return;
+                if (chat.messages.length === 0) {
+                    chat.kind = chat.kind === "practice" ? "teach" : "practice";
+                    this.stores.chatStore.saveChat(chat);
+                } else {
+                    const nextKind = chat.kind === "practice" ? "teach" : "practice";
+                    const created = this.stores.chatStore.createChat({
+                        title: nextKind === "practice" ? "Practice" : "New Chat",
+                        kind: nextKind,
+                    });
+                    this.selectChat(created.id);
+                }
+            },
+            onCycleModel: () => {
+                const s = this.stores.settingsStore.get();
+                const nextProvider =
+                    s.activeProvider === "deepseek"
+                        ? "gemini"
+                        : s.activeProvider === "gemini"
+                          ? "deepseek"
+                          : "deepseek";
+                this.stores.settingsStore.save({ activeProvider: nextProvider });
+            },
+            onToggleMechanic: () => {
+                const s = this.stores.settingsStore.get();
+                const nextMech = s.quizzingMechanic === "explain" ? "quiz" : "explain";
+                this.stores.settingsStore.save({ quizzingMechanic: nextMech });
+            },
             onSubmit: (payload) => void this.handleUserSubmit(payload),
             onStop: () => {
                 if (this.activeChatId) this.runner.abortTurn(this.activeChatId);
@@ -795,6 +851,7 @@ export class SidebarView {
         const chat = this.getActiveChat();
         const busy = chat ? this.runner.getState(chat.id).busy : false;
         this.blockInput?.setBusy(busy);
+        this.blockInput?.refreshPills();
     }
 
     private async handleUserSubmit(payload: {

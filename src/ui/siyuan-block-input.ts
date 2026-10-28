@@ -1,21 +1,28 @@
 /**
  * Mini SiYuan Note Chat Input (`SiYuanBlockInput`).
  *
- * Mounts a real standalone SiYuan `Protyle` editor (`lite: true`) inside a modern
- * chat composer card so the input box behaves like an authentic mini SiYuan note:
- *   - Native `/` slash commands (headings, code blocks, math blocks, callouts, lists, tables)
- *   - Native `((` block reference search & inline block chips
- *   - Native text selection formatting toolbar & block gutter handles
- *   - `Enter` to send (when `/` or `((` hint menu is closed and not inside a code/math block)
- *   - `Shift+Enter` to create a new SiYuan block inside the mini note
+ * Mounts a real standalone SiYuan `Protyle` editor (`lite: true`) inside an elevated,
+ * shadow-floated composer card that inherits SiYuan's background grid and matches
+ * modern AI chat interfaces.
  */
 
 import { Protyle, type App } from "siyuan";
 import { escapeHtml } from "./markdown";
 
+export interface ComposerPillsState {
+    modeLabel: string;
+    modelLabel: string;
+    mechanicLabel: string;
+}
+
 export interface SiYuanBlockInputOptions {
     app: App;
     placeholder?: string;
+    getPillsState?: () => ComposerPillsState;
+    onToggleMode?: () => void;
+    onCycleModel?: () => void;
+    onToggleMechanic?: () => void;
+    onAttachActiveNote?: () => void;
     onSubmit: (payload: {
         displayMarkdown: string;
         referencedBlockIds: string[];
@@ -23,8 +30,18 @@ export interface SiYuanBlockInputOptions {
     onStop: () => void;
 }
 
-const SEND_ARROW_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>`;
-const STOP_SQUARE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
+// Paper-plane outline icon matching the reference screenshot
+const PAPER_PLANE_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>`;
+
+const STOP_SQUARE_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"></rect></svg>`;
+
+const NOTE_LINK_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`;
+
+const SHIELD_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>`;
+
+const ATOM_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"></circle><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(30 12 12)"></ellipse><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(150 12 12)"></ellipse></svg>`;
+
+const BRAIN_ICON_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"></path></svg>`;
 
 export class SiYuanBlockInput {
     private container: HTMLElement;
@@ -34,6 +51,9 @@ export class SiYuanBlockInput {
 
     private cardEl!: HTMLElement;
     private protyleHostEl!: HTMLElement;
+    private modePillTextEl!: HTMLElement;
+    private modelPillTextEl!: HTMLElement;
+    private mechanicPillTextEl!: HTMLElement;
     private actionBtnEl!: HTMLButtonElement;
 
     constructor(container: HTMLElement, opts: SiYuanBlockInputOptions) {
@@ -71,27 +91,104 @@ export class SiYuanBlockInput {
     }
 
     private mount(): void {
+        const pills = this.opts.getPillsState?.() ?? {
+            modeLabel: "Teach mode",
+            modelLabel: "deepseek-chat",
+            mechanicLabel: "Quiz",
+        };
+
         this.cardEl = document.createElement("div");
         this.cardEl.className = "lh-composer-card";
         this.cardEl.innerHTML = `
             <div class="lh-composer-card__editor" data-placeholder="${escapeHtml(
-                this.opts.placeholder ?? "Write a message, press / for blocks, (( to reference notes...",
+                this.opts.placeholder ?? "Write a note or question... (/ for blocks, (( to reference notes)",
             )}"></div>
             <div class="lh-composer-card__footer">
-                <span class="lh-composer-card__hint"><code>/</code> blocks · <code>((</code> ref · <code>⇧↵</code> new block</span>
-                <button class="lh-send-icon-btn lh-send-icon-btn--empty" type="button" title="Send (Enter)">
-                    ${SEND_ARROW_SVG}
-                </button>
+                <div class="lh-composer-card__left">
+                    <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-note" title="Insert active SiYuan note into textbox">
+                        ${NOTE_LINK_SVG}
+                    </button>
+                    <button class="lh-composer-pill" type="button" data-composer-action="toggle-mode" title="Click to switch between Teaching and Practice mode">
+                        ${SHIELD_ICON_SVG}
+                        <span class="lh-pill-mode-text">${escapeHtml(pills.modeLabel)}</span>
+                    </button>
+                </div>
+                <div class="lh-composer-card__right">
+                    <button class="lh-composer-pill" type="button" data-composer-action="cycle-model" title="Click to switch LLM provider/model">
+                        ${ATOM_ICON_SVG}
+                        <span class="lh-pill-model-text">${escapeHtml(pills.modelLabel)}</span>
+                    </button>
+                    <button class="lh-composer-pill" type="button" data-composer-action="toggle-mechanic" title="Click to toggle Multiple-Choice (Quiz) vs Free-Recall (Explain)">
+                        ${BRAIN_ICON_SVG}
+                        <span class="lh-pill-mechanic-text">${escapeHtml(pills.mechanicLabel)}</span>
+                    </button>
+                    <button class="lh-send-plane-btn lh-send-plane-btn--empty" type="button" title="Send (Enter)">
+                        ${PAPER_PLANE_SVG}
+                    </button>
+                </div>
             </div>
         `;
         this.container.innerHTML = "";
         this.container.appendChild(this.cardEl);
 
         this.protyleHostEl = this.cardEl.querySelector(".lh-composer-card__editor") as HTMLElement;
-        this.actionBtnEl = this.cardEl.querySelector(".lh-send-icon-btn") as HTMLButtonElement;
+        this.modePillTextEl = this.cardEl.querySelector(".lh-pill-mode-text") as HTMLElement;
+        this.modelPillTextEl = this.cardEl.querySelector(".lh-pill-model-text") as HTMLElement;
+        this.mechanicPillTextEl = this.cardEl.querySelector(".lh-pill-mechanic-text") as HTMLElement;
+        this.actionBtnEl = this.cardEl.querySelector(".lh-send-plane-btn") as HTMLButtonElement;
 
         this.initProtyle();
+        this.syncBackgroundGridFromWorkspace();
         this.bindEvents();
+    }
+
+    public refreshPills(): void {
+        const pills = this.opts.getPillsState?.();
+        if (!pills) return;
+        if (this.modePillTextEl) this.modePillTextEl.textContent = pills.modeLabel;
+        if (this.modelPillTextEl) this.modelPillTextEl.textContent = pills.modelLabel;
+        if (this.mechanicPillTextEl) this.mechanicPillTextEl.textContent = pills.mechanicLabel;
+    }
+
+    /**
+     * Inherit any background-image grid applied by SiYuan's background grid plugin
+     * only if our inner Protyle doesn't already have it via CSS.
+     */
+    public syncBackgroundGridFromWorkspace(): void {
+        try {
+            const innerElements = Array.from(
+                this.protyleHostEl.querySelectorAll(".protyle, .protyle-content, .protyle-wysiwyg"),
+            ) as HTMLElement[];
+
+            for (const inner of innerElements) {
+                const innerCs = window.getComputedStyle(inner);
+                if (innerCs.backgroundImage && innerCs.backgroundImage !== "none") {
+                    // The background grid plugin already applies its grid directly to our inner Protyle!
+                    return;
+                }
+            }
+
+            const targetEl = this.getWysiwygElement() ?? this.protyleHostEl;
+            const candidates = Array.from(
+                document.querySelectorAll(
+                    ".layout__center .protyle-wysiwyg, .layout__center .protyle-content, .layout__center .protyle",
+                ),
+            ) as HTMLElement[];
+
+            for (const el of candidates) {
+                if (this.cardEl.contains(el)) continue;
+                const cs = window.getComputedStyle(el);
+                if (cs.backgroundImage && cs.backgroundImage !== "none") {
+                    targetEl.style.backgroundImage = cs.backgroundImage;
+                    targetEl.style.backgroundSize = cs.backgroundSize;
+                    targetEl.style.backgroundPosition = cs.backgroundPosition;
+                    targetEl.style.backgroundRepeat = cs.backgroundRepeat;
+                    return;
+                }
+            }
+        } catch {
+            // ignore
+        }
     }
 
     private initProtyle(): void {
@@ -113,11 +210,11 @@ export class SiYuanBlockInput {
                 },
                 after: (p) => {
                     this.ensureEditableProtyle(p, rootId);
+                    this.syncBackgroundGridFromWorkspace();
                 },
             });
             this.ensureEditableProtyle(this.protyleInstance, rootId);
         } catch {
-            // Fallback if Protyle constructor throws in an unusual environment
             this.protyleHostEl.innerHTML = `<div class="protyle-wysiwyg">${this.createEmptyParagraphHtml()}</div>`;
         }
         this.syncEmptyState();
@@ -196,7 +293,6 @@ export class SiYuanBlockInput {
         const refIds = new Set<string>();
         const clone = wysiwygEl.cloneNode(true) as HTMLElement;
 
-        // 1. Collect and preserve inline SiYuan block-ref spans (`<span data-type="block-ref" data-id="...">`)
         clone.querySelectorAll('[data-type="block-ref"]').forEach((el) => {
             const id = el.getAttribute("data-id") || "";
             const label = (el.textContent || id).replace(/\u200B/g, "").trim().replace(/"/g, "'");
@@ -206,7 +302,6 @@ export class SiYuanBlockInput {
             }
         });
 
-        // 2. Remove non-content Protyle attribute nodes before converting to Markdown
         clone.querySelectorAll(".protyle-attr, .protyle-action__drag").forEach((el) => el.remove());
 
         let md = "";
@@ -222,7 +317,6 @@ export class SiYuanBlockInput {
             md = (clone.innerText ?? clone.textContent ?? "").replace(/\u200B/g, "").trim();
         }
 
-        // 3. Also detect any `((2024...))` or `siyuan://blocks/2024...` typed/pasted in the markdown
         for (const m of md.matchAll(/\(\((\d{14}-[a-z0-9]{7})(?:\s+(?:"[^"]*"|'[^']*'))?\)\)/gi)) {
             if (m[1]) refIds.add(m[1]);
         }
@@ -260,12 +354,12 @@ export class SiYuanBlockInput {
         this.busy = busy;
         if (busy) {
             this.actionBtnEl.innerHTML = STOP_SQUARE_SVG;
-            this.actionBtnEl.classList.add("lh-send-icon-btn--stop");
-            this.actionBtnEl.classList.remove("lh-send-icon-btn--empty");
+            this.actionBtnEl.classList.add("lh-send-plane-btn--stop");
+            this.actionBtnEl.classList.remove("lh-send-plane-btn--empty");
             this.actionBtnEl.title = "Stop generating";
         } else {
-            this.actionBtnEl.innerHTML = SEND_ARROW_SVG;
-            this.actionBtnEl.classList.remove("lh-send-icon-btn--stop");
+            this.actionBtnEl.innerHTML = PAPER_PLANE_SVG;
+            this.actionBtnEl.classList.remove("lh-send-plane-btn--stop");
             this.actionBtnEl.title = "Send (Enter)";
             this.syncEmptyState();
         }
@@ -324,16 +418,36 @@ export class SiYuanBlockInput {
         if (isEmpty) {
             this.protyleHostEl.classList.add("lh-composer-card__editor--empty");
             if (!this.busy) {
-                this.actionBtnEl.classList.add("lh-send-icon-btn--empty");
+                this.actionBtnEl.classList.add("lh-send-plane-btn--empty");
             }
         } else {
             this.protyleHostEl.classList.remove("lh-composer-card__editor--empty");
-            this.actionBtnEl.classList.remove("lh-send-icon-btn--empty");
+            this.actionBtnEl.classList.remove("lh-send-plane-btn--empty");
         }
     }
 
     private bindEvents(): void {
-        // Click on the circular Send / Stop icon button
+        // Footer pill and icon actions
+        this.cardEl.addEventListener("click", (e) => {
+            const btn = (e.target as HTMLElement).closest("[data-composer-action]") as HTMLElement | null;
+            if (!btn) return;
+            e.preventDefault();
+            const act = btn.dataset.composerAction;
+            if (act === "attach-note") {
+                this.opts.onAttachActiveNote?.();
+            } else if (act === "toggle-mode") {
+                this.opts.onToggleMode?.();
+                this.refreshPills();
+            } else if (act === "cycle-model") {
+                this.opts.onCycleModel?.();
+                this.refreshPills();
+            } else if (act === "toggle-mechanic") {
+                this.opts.onToggleMechanic?.();
+                this.refreshPills();
+            }
+        });
+
+        // Click on the paper-plane Send / Stop icon button
         this.actionBtnEl.addEventListener("click", (e) => {
             e.preventDefault();
             if (this.busy) {
@@ -343,7 +457,10 @@ export class SiYuanBlockInput {
             }
         });
 
-        // Monitor input mutations inside Protyle to update empty placeholder & button state
+        this.protyleHostEl.addEventListener("focusin", () => {
+            this.syncBackgroundGridFromWorkspace();
+        });
+
         this.protyleHostEl.addEventListener("input", () => {
             const wysiwygEl = this.getWysiwygElement();
             if (wysiwygEl && !wysiwygEl.querySelector("[data-node-id]")) {
@@ -357,15 +474,11 @@ export class SiYuanBlockInput {
         });
         observer.observe(this.protyleHostEl, { childList: true, subtree: true, characterData: true });
 
-        // Capture-phase keydown on the Protyle container:
-        // - If Protyle's `/` or `((` hint menu is open, let Protyle handle Enter natively!
-        // - If inside a code block / math block / table, let Enter add a line and Ctrl/Cmd+Enter send!
-        // - Otherwise, plain Enter sends the message, and Shift+Enter dispatches a native Enter to Protyle to create a new block!
         this.protyleHostEl.addEventListener(
             "keydown",
             (e: KeyboardEvent) => {
                 if ((e as any)._lhSyntheticEnter) {
-                    return; // Let Protyle handle our synthetic Enter to create a new block
+                    return;
                 }
                 if (e.isComposing || e.keyCode === 229) {
                     return;
@@ -374,12 +487,10 @@ export class SiYuanBlockInput {
                     return;
                 }
 
-                // 1. Let Protyle's `/` or `((` hint popup handle Enter natively
                 if (this.isHintPopupVisible()) {
                     return;
                 }
 
-                // 2. Ctrl+Enter or Cmd+Enter always submits
                 if (e.ctrlKey || e.metaKey) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -387,12 +498,10 @@ export class SiYuanBlockInput {
                     return;
                 }
 
-                // 3. Inside a code block, math block, or table, let plain Enter insert a newline natively
                 if (this.isSelectionInsideMultilineBlock()) {
                     return;
                 }
 
-                // 4. Shift+Enter -> tell Protyle to create a new SiYuan block!
                 if (e.shiftKey) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -412,7 +521,6 @@ export class SiYuanBlockInput {
                     return;
                 }
 
-                // 5. Plain Enter in a normal block -> submit the chat message!
                 e.preventDefault();
                 e.stopPropagation();
                 this.submit();
