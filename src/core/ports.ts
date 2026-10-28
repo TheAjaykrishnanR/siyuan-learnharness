@@ -34,6 +34,10 @@ export interface PluginSettings {
     customModel: string;
     customBaseUrl: string;
     useSiyuanAiFallback: boolean;
+    /** Cached available models fetched from API keys */
+    cachedDeepseekModels?: string[];
+    cachedGeminiModels?: string[];
+    cachedCustomModels?: string[];
     /** Pedagogical preferences */
     quizzingMechanic: "quiz" | "explain";
     /** Proactive read-only SiYuan note search during probing & teaching */
@@ -58,6 +62,16 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
     customModel: "gpt-4o",
     customBaseUrl: "https://api.openai.com/v1",
     useSiyuanAiFallback: true,
+    cachedDeepseekModels: ["deepseek-chat", "deepseek-reasoner"],
+    cachedGeminiModels: [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ],
+    cachedCustomModels: [],
     quizzingMechanic: "quiz",
     proactiveSiyuanNoteSearch: true,
     graphToolsEnabled: true,

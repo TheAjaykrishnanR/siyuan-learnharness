@@ -30,6 +30,7 @@ import {
     DEFAULT_CONFIDENCE_INDEX,
     type QuestionAnswerData,
 } from "./core/question-core";
+import type { ProviderId } from "./core/ports";
 import { getBlockById, readNoteMarkdown } from "./siyuan/client";
 import type { SiYuanHarnessStores } from "./store/siyuan-store";
 import { KnowledgeGraphView } from "./ui/graph-view";
@@ -285,13 +286,56 @@ export class SidebarView {
             },
             onCycleModel: () => {
                 const s = this.stores.settingsStore.get();
-                const nextProvider =
-                    s.activeProvider === "deepseek"
-                        ? "gemini"
-                        : s.activeProvider === "gemini"
-                          ? "deepseek"
-                          : "deepseek";
-                this.stores.settingsStore.save({ activeProvider: nextProvider });
+                const provider = s.activeProvider;
+                const models =
+                    provider === "deepseek"
+                        ? s.cachedDeepseekModels || ["deepseek-chat", "deepseek-reasoner"]
+                        : provider === "gemini"
+                          ? s.cachedGeminiModels || ["gemini-2.5-flash", "gemini-2.5-pro"]
+                          : s.cachedCustomModels?.length
+                            ? s.cachedCustomModels
+                            : [s.customModel || "gpt-4o"];
+
+                const currentModel =
+                    provider === "deepseek"
+                        ? s.deepseekModel
+                        : provider === "gemini"
+                          ? s.geminiModel
+                          : s.customModel;
+
+                const currIdx = models.indexOf(currentModel);
+                if (currIdx !== -1 && currIdx < models.length - 1) {
+                    const nextModel = models[currIdx + 1];
+                    if (provider === "deepseek") {
+                        this.stores.settingsStore.save({ deepseekModel: nextModel });
+                    } else if (provider === "gemini") {
+                        this.stores.settingsStore.save({ geminiModel: nextModel });
+                    } else {
+                        this.stores.settingsStore.save({ customModel: nextModel });
+                    }
+                    showMessage(`Model: ${nextModel}`, 2000, "info");
+                } else {
+                    const nextProvider: ProviderId =
+                        provider === "deepseek" ? "gemini" : provider === "gemini" ? "custom" : "deepseek";
+                    const nextModels =
+                        nextProvider === "deepseek"
+                            ? s.cachedDeepseekModels || ["deepseek-chat", "deepseek-reasoner"]
+                            : nextProvider === "gemini"
+                              ? s.cachedGeminiModels || ["gemini-2.5-flash", "gemini-2.5-pro"]
+                              : s.cachedCustomModels?.length
+                                ? s.cachedCustomModels
+                                : [s.customModel || "gpt-4o"];
+                    const nextModel = nextModels[0] || (nextProvider === "deepseek" ? "deepseek-chat" : "gemini-2.5-flash");
+
+                    if (nextProvider === "deepseek") {
+                        this.stores.settingsStore.save({ activeProvider: nextProvider, deepseekModel: nextModel });
+                    } else if (nextProvider === "gemini") {
+                        this.stores.settingsStore.save({ activeProvider: nextProvider, geminiModel: nextModel });
+                    } else {
+                        this.stores.settingsStore.save({ activeProvider: nextProvider, customModel: nextModel });
+                    }
+                    showMessage(`Switched to ${nextProvider}: ${nextModel}`, 2000, "info");
+                }
             },
             onToggleMechanic: () => {
                 const s = this.stores.settingsStore.get();

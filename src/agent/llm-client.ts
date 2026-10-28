@@ -22,6 +22,174 @@ export interface ResolvedModelConfig {
     baseUrl: string;
 }
 
+export interface AvailableModelItem {
+    id: string;
+    name?: string;
+    description?: string;
+}
+
+/**
+ * Fetch available models dynamically from the provider API key and endpoint.
+ */
+export async function fetchAvailableModels(
+    provider: ProviderId,
+    apiKey: string,
+    baseUrl?: string,
+): Promise<AvailableModelItem[]> {
+    const key = apiKey.trim();
+    if (!key && provider !== "custom") {
+        throw new Error(`API key is required to fetch available ${provider} models.`);
+    }
+
+    if (provider === "deepseek") {
+        let ep = (baseUrl || "https://api.deepseek.com/v1").replace(/\/+$/, "");
+        if (!ep.endsWith("/models")) {
+            ep = `${ep}/models`;
+        }
+
+        const res = await fetch(ep, {
+            method: "GET",
+            headers: {
+                Authorization: `Bearer ${key}`,
+            },
+        });
+
+        if (!res.ok) {
+            const err = await res.text().catch(() => "");
+            throw new Error(`DeepSeek API error (${res.status}): ${err || res.statusText}`);
+        }
+
+        const json = await res.json();
+        const list = Array.isArray(json?.data) ? json.data : [];
+        const models: AvailableModelItem[] = list
+            .map((m: any) => {
+                const id = String(m?.id || "").trim();
+                let name = id;
+                if (id === "deepseek-chat") name = "deepseek-chat (V3)";
+                else if (id === "deepseek-reasoner") name = "deepseek-reasoner (R1 Thinking)";
+                return { id, name };
+            })
+            .filter((m: AvailableModelItem) => Boolean(m.id));
+
+        if (models.length === 0) {
+            return [
+                { id: "deepseek-chat", name: "deepseek-chat (V3)" },
+                { id: "deepseek-reasoner", name: "deepseek-reasoner (R1 Thinking)" },
+            ];
+        }
+        return models;
+    }
+
+    if (provider === "gemini") {
+        const isCustomBase = baseUrl && !baseUrl.includes("generativelanguage.googleapis.com");
+        if (isCustomBase) {
+            let ep = baseUrl.replace(/\/+$/, "");
+            if (!ep.endsWith("/models")) ep = `${ep}/models`;
+            const res = await fetch(ep, {
+                headers: { Authorization: `Bearer ${key}` },
+            });
+            if (!res.ok) {
+                const err = await res.text().catch(() => "");
+                throw new Error(`Gemini custom endpoint error (${res.status}): ${err || res.statusText}`);
+            }
+            const json = await res.json();
+            const list = Array.isArray(json?.data) ? json.data : Array.isArray(json?.models) ? json.models : [];
+            return list
+                .map((m: any) => {
+                    const id = String(m?.id || m?.name || "").replace(/^models\//, "");
+                    return { id, name: m?.displayName || id };
+                })
+                .filter((m: AvailableModelItem) => Boolean(m.id));
+        }
+
+        // Native Google Gemini API endpoint
+        let models: AvailableModelItem[] = [];
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
+            const res = await fetch(url);
+            if (res.ok) {
+                const json = await res.json();
+                if (Array.isArray(json?.models)) {
+                    models = json.models
+                        .filter((m: any) => {
+                            const name = String(m?.name || "").replace(/^models\//, "");
+                            if (name.includes("embedding") || name.includes("aqa") || name.includes("imagen")) return false;
+                            const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+                            return methods.includes("generateContent") || name.startsWith("gemini");
+                        })
+                        .map((m: any) => {
+                            const id = String(m?.name || "").replace(/^models\//, "");
+                            const displayName = m?.displayName ? `${id} (${m.displayName})` : id;
+                            return { id, name: displayName };
+                        });
+                }
+            } else {
+                const err = await res.text().catch(() => "");
+                throw new Error(`Google API error (${res.status}): ${err || res.statusText}`);
+            }
+        } catch (nativeErr: any) {
+            // Fallback to OpenAI-compatible Gemini endpoint
+            const ep = "https://generativelanguage.googleapis.com/v1beta/openai/models";
+            const res = await fetch(ep, {
+                headers: { Authorization: `Bearer ${key}` },
+            });
+            if (res.ok) {
+                const json = await res.json();
+                const list = Array.isArray(json?.data) ? json.data : [];
+                models = list
+                    .map((m: any) => {
+                        const id = String(m?.id || "").replace(/^models\//, "");
+                        return { id, name: id };
+                    })
+                    .filter((m: AvailableModelItem) => Boolean(m.id) && m.id.startsWith("gemini"));
+            } else {
+                throw nativeErr || new Error("Failed to fetch Gemini models.");
+            }
+        }
+
+        // Sort models so newer / primary models come first
+        const priority = [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+        ];
+        models.sort((a, b) => {
+            const aIdx = priority.findIndex((p) => a.id.startsWith(p));
+            const bIdx = priority.findIndex((p) => b.id.startsWith(p));
+            if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+            if (aIdx !== -1) return -1;
+            if (bIdx !== -1) return 1;
+            return a.id.localeCompare(b.id);
+        });
+
+        return models;
+    }
+
+    // Custom / OpenAI
+    let ep = (baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+    if (!ep.endsWith("/models")) ep = `${ep}/models`;
+    const res = await fetch(ep, {
+        headers: key ? { Authorization: `Bearer ${key}` } : {},
+    });
+    if (!res.ok) {
+        const err = await res.text().catch(() => "");
+        throw new Error(`Custom endpoint error (${res.status}): ${err || res.statusText}`);
+    }
+    const json = await res.json();
+    const list = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+    const models = list
+        .map((m: any) => {
+            const id = typeof m === "string" ? m : String(m?.id || "");
+            return { id, name: id };
+        })
+        .filter((m: AvailableModelItem) => Boolean(m.id));
+    models.sort((a: AvailableModelItem, b: AvailableModelItem) => a.id.localeCompare(b.id));
+    return models;
+}
+
 /** Resolve the active provider credentials from PluginSettings, with optional fallback to SiYuan's built-in AI settings. */
 export function resolveModelConfig(
     settings: PluginSettings,
