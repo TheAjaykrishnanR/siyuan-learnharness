@@ -1,0 +1,9 @@
+node_modules/
+dist/
+i18n/
+index.js
+index.css
+kernel.js
+.eslintcache
+package.zip
+*.log

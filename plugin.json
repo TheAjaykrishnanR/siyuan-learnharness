@@ -1,0 +1,51 @@
+{
+  "name": "siyuan-learnharness",
+  "author": "Jayakuttan",
+  "url": "https://github.com/theajaykrishnanr/siyuan-learnharness",
+  "version": "0.1.0",
+  "minAppVersion": "3.8.5",
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "ios",
+    "android",
+    "harmony",
+    "docker",
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "mobile",
+    "browser-desktop",
+    "browser-mobile",
+    "desktop-window",
+    "all"
+  ],
+  "disabledInPublish": false,
+  "displayName": {
+    "default": "LearnHarness for SiYuan",
+    "zh-CN": "思源 LearnHarness 助学引擎"
+  },
+  "description": {
+    "default": "Personalized pedagogical agent & knowledge graph harness with read-only access to your SiYuan notes.",
+    "zh-CN": "具备思源笔记只读访问权限的个性化诊断教学与知识图谱插件。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh-CN": "README.zh-CN.md"
+  },
+  "icon": "icon.png",
+  "preview": "preview.png",
+  "funding": {
+    "custom": []
+  },
+  "keywords": [
+    "template",
+    "dock",
+    "sidebar",
+    "plugin-template",
+    "模板",
+    "侧边栏"
+  ]
+}
