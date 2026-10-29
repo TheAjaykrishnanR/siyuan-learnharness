@@ -65,7 +65,11 @@ export class SidebarView {
     private planExpanded = false;
     private questionDraft: ActiveQuestionDraft | null = null;
 
-    private headerSelectEl!: HTMLSelectElement;
+    private sessionDropdownEl!: HTMLElement;
+    private sessionTitleEl!: HTMLElement;
+    private sessionMenuEl!: HTMLElement;
+    private sessionListEl!: HTMLElement;
+    private boundDocClickListener?: (e: MouseEvent) => void;
     private graphBtnEl!: HTMLElement;
     private planStripEl!: HTMLElement;
     private chatBodyEl!: HTMLElement;
@@ -129,6 +133,9 @@ export class SidebarView {
     public destroy(): void {
         this.unsubStore?.();
         this.unsubRunner?.();
+        if (this.boundDocClickListener) {
+            document.removeEventListener("click", this.boundDocClickListener);
+        }
         this.blockInput?.destroy();
         this.graphView?.destroy();
     }
@@ -195,7 +202,21 @@ export class SidebarView {
         this.rootElement.innerHTML = `
             <div class="fn__flex-1 fn__flex-column lh-dock-chat">
                 <div class="block__icons lh-chat-header">
-                    <select class="b3-select lh-session-select" title="Switch or create chat session"></select>
+                    <div class="lh-session-dropdown">
+                    <button type="button" class="lh-session-dropdown__trigger" data-action="toggle-session-menu" title="Switch or manage chat sessions">
+                        <span class="lh-session-dropdown__active-title">New Chat</span>
+                        <svg class="lh-session-dropdown__chevron" viewBox="0 0 16 16"><path fill="currentColor" d="M4.5 6L8 9.5 11.5 6z"/></svg>
+                    </button>
+                    <div class="lh-session-dropdown__menu fn__none">
+                        <div class="lh-session-dropdown__actions">
+                            <button type="button" class="lh-session-dropdown__new-btn" data-action="dropdown-new-chat">
+                                <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/></svg>
+                                <span>New Chat</span>
+                            </button>
+                        </div>
+                        <div class="lh-session-dropdown__list"></div>
+                    </div>
+                </div>
                     <span class="fn__space"></span>
                     <span class="block__icon b3-tooltips b3-tooltips__sw" aria-label="New Chat" data-action="new-chat">
                         <svg><use xlink:href="#iconAdd"></use></svg>
@@ -230,7 +251,10 @@ export class SidebarView {
             </div>
         `;
 
-        this.headerSelectEl = this.rootElement.querySelector(".lh-session-select") as HTMLSelectElement;
+        this.sessionDropdownEl = this.rootElement.querySelector(".lh-session-dropdown") as HTMLElement;
+        this.sessionTitleEl = this.rootElement.querySelector(".lh-session-dropdown__active-title") as HTMLElement;
+        this.sessionMenuEl = this.rootElement.querySelector(".lh-session-dropdown__menu") as HTMLElement;
+        this.sessionListEl = this.rootElement.querySelector(".lh-session-dropdown__list") as HTMLElement;
         this.graphBtnEl = this.rootElement.querySelector(".lh-graph-toggle-btn") as HTMLElement;
         this.planStripEl = this.rootElement.querySelector(".lh-plan-strip") as HTMLElement;
         this.chatBodyEl = this.rootElement.querySelector(".lh-chat-main") as HTMLElement;
@@ -392,23 +416,36 @@ export class SidebarView {
 
     private renderHeaderSelect(): void {
         const chats = this.stores.chatStore.listChats();
-        const optionsHtml: string[] = [];
-
-        for (const c of chats) {
-            const selected = c.id === this.activeChatId ? "selected" : "";
-            const prefix = c.kind === "practice" ? "🎯 " : "";
-            optionsHtml.push(
-                `<option value="${escapeHtml(c.id)}" ${selected}>${prefix}${escapeHtml(c.title)}</option>`,
-            );
+        const activeChat = this.getActiveChat();
+        if (this.sessionTitleEl) {
+            const prefix = activeChat?.kind === "practice" ? "🎯 " : "";
+            this.sessionTitleEl.textContent = `${prefix}${activeChat?.title || "New Chat"}`;
         }
 
-        optionsHtml.push(`<option value="__new_teach__">+ New Learning Chat</option>`);
-        optionsHtml.push(`<option value="__new_practice__">+ New Practice Chat</option>`);
+        if (!this.sessionListEl) return;
 
-        this.headerSelectEl.innerHTML = optionsHtml.join("");
-        if (this.activeChatId) {
-            this.headerSelectEl.value = this.activeChatId;
+        if (chats.length === 0) {
+            this.sessionListEl.innerHTML = `<div class="lh-session-dropdown__empty">No chats yet</div>`;
+            return;
         }
+
+        const itemsHtml = chats.map((c) => {
+            const isActive = c.id === this.activeChatId;
+            const icon = c.kind === "practice" ? "🎯" : "💬";
+            return `
+                <div class="lh-dropdown-item ${isActive ? "lh-dropdown-item--active" : ""}" data-chat-id="${escapeHtml(c.id)}">
+                    <div class="lh-dropdown-item__main">
+                        <span class="lh-dropdown-item__icon">${icon}</span>
+                        <span class="lh-dropdown-item__title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+                    </div>
+                    <button type="button" class="lh-dropdown-item__del-btn" data-delete-id="${escapeHtml(c.id)}" title="Delete chat">
+                        <svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.5 2a.5.5 0 0 0-.5.5v1H2.5a.5.5 0 0 0 0 1h.541l.732 9.026A1.5 1.5 0 0 0 5.266 15h5.468a1.5 1.5 0 0 0 1.493-1.474L12.959 4.5h.541a.5.5 0 0 0 0-1H11v-1a.5.5 0 0 0-.5-.5h-5zM6 3h4v1H6V3zm-.954 2h5.908l-.715 8.818a.5.5 0 0 1-.498.482H5.266a.5.5 0 0 1-.498-.482L4.046 5z"/></svg>
+                    </button>
+                </div>
+            `;
+        });
+
+        this.sessionListEl.innerHTML = itemsHtml.join("");
     }
 
     private renderPlanStrip(): void {
@@ -952,19 +989,13 @@ export class SidebarView {
     }
 
     private bindEvents(): void {
-        // Session dropdown change
-        this.headerSelectEl.addEventListener("change", () => {
-            const val = this.headerSelectEl.value;
-            if (val === "__new_teach__") {
-                const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
-                this.selectChat(created.id);
-            } else if (val === "__new_practice__") {
-                const created = this.stores.chatStore.createChat({ title: "Practice", kind: "practice" });
-                this.selectChat(created.id);
-            } else if (val) {
-                this.selectChat(val);
+        // Close session dropdown when clicking outside
+        this.boundDocClickListener = (ev: MouseEvent) => {
+            if (this.sessionDropdownEl && !this.sessionDropdownEl.contains(ev.target as Node)) {
+                this.sessionMenuEl?.classList.add("fn__none");
             }
-        });
+        };
+        document.addEventListener("click", this.boundDocClickListener);
 
         // Hover preview for SiYuan block references (`data-block-ref-id` or Protyle `data-type="block-ref"`)
         this.rootElement.addEventListener("mouseover", (e) => {
@@ -980,11 +1011,51 @@ export class SidebarView {
 
         // Click actions
         this.rootElement.addEventListener("click", (e) => {
+            const delBtn = (e.target as HTMLElement).closest("[data-delete-id]") as HTMLElement | null;
+            if (delBtn) {
+                e.stopPropagation();
+                const deleteId = delBtn.dataset.deleteId;
+                if (deleteId) {
+                    this.stores.chatStore.deleteChat(deleteId);
+                    if (this.activeChatId === deleteId) {
+                        const remaining = this.stores.chatStore.listChats();
+                        if (remaining.length > 0) {
+                            this.selectChat(remaining[0]!.id);
+                        } else {
+                            const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
+                            this.selectChat(created.id);
+                        }
+                    } else {
+                        this.renderHeaderSelect();
+                    }
+                    showMessage("Chat deleted", 2000, "info");
+                }
+                return;
+            }
+
+            const chatItem = (e.target as HTMLElement).closest("[data-chat-id]") as HTMLElement | null;
+            if (chatItem) {
+                const chatId = chatItem.dataset.chatId;
+                if (chatId) {
+                    this.selectChat(chatId);
+                    this.sessionMenuEl?.classList.add("fn__none");
+                }
+                return;
+            }
             const target = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
             if (!target) return;
             const action = target.dataset.action;
 
-            if (action === "new-chat") {
+            if (action === "toggle-session-menu") {
+                this.sessionMenuEl?.classList.toggle("fn__none");
+                this.renderHeaderSelect();
+                return;
+            } else if (action === "dropdown-new-chat") {
+                const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
+                this.selectChat(created.id);
+                this.sessionMenuEl?.classList.add("fn__none");
+                return;
+            } else if (action === "new-chat") {
                 const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
                 this.selectChat(created.id);
             } else if (action === "toggle-graph") {
