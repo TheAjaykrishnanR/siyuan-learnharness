@@ -317,10 +317,14 @@ export class SessionRunner {
                     callbacks: {
                         signal: ctrl.signal,
                         onPartialUpdate: (partial) => {
-                            this.setState(chatId, { streamingMessage: partial });
+                            if (!ctrl.signal.aborted) {
+                                this.setState(chatId, { streamingMessage: partial });
+                            }
                         },
                     },
                 });
+
+                if (ctrl.signal.aborted) break;
 
                 // Reload latest record and append settled assistant message
                 const freshRecord = this.deps.chatStore.getChat(chatId);
@@ -337,6 +341,7 @@ export class SessionRunner {
                 let pausedOnTerminalTool = false;
 
                 for (const call of toolCalls) {
+                    if (ctrl.signal.aborted) break;
                     if (call.type !== "toolCall") continue;
                     const tool = tools[call.name];
                     if (!tool) {
@@ -364,6 +369,7 @@ export class SessionRunner {
                     this.deps.chatStore.saveChat(freshRecord);
 
                     const result = await tool.execute(call.id, preparedArgs);
+                    if (ctrl.signal.aborted) break;
 
                     if (result.terminal && !result.isError) {
                         // Do not append a toolResult yet for question tools (probe, recall, quiz, explain, ask_user_question):
@@ -408,13 +414,15 @@ export class SessionRunner {
                 }
             }
         } catch (err: any) {
-            if (err?.name !== "AbortError") {
+            if (!ctrl.signal.aborted && err?.name !== "AbortError") {
                 console.error("[LearnHarness] Agent turn error:", err);
                 this.setState(chatId, { error: err?.message ?? String(err) });
             }
         } finally {
-            this.activeControllers.delete(chatId);
-            this.setState(chatId, { busy: false, streamingMessage: null, activeToolStatus: null });
+            if (this.activeControllers.get(chatId) === ctrl) {
+                this.activeControllers.delete(chatId);
+                this.setState(chatId, { busy: false, streamingMessage: null, activeToolStatus: null });
+            }
         }
 
         // Automatic Prober -> Teacher Handoff Steer when probe_done just concluded!
@@ -430,6 +438,7 @@ export class SessionRunner {
         }
 
         // Background Knowledge Graph Extraction if enabled and in teacher mode
+        if (ctrl.signal.aborted) return;
         const finalRecord = this.deps.chatStore.getChat(chatId);
         const settings = this.deps.settingsStore.get();
         if (

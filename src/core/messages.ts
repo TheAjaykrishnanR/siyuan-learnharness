@@ -97,9 +97,14 @@ export function newSiyuanNoteContextMessage(opts: {
     title: string;
     hPath: string;
     markdownExcerpt: string;
+    passive?: boolean;
 }): LhMarkerMessage {
+    const header = opts.passive
+        ? `[Active SiYuan Note Context] — the learner currently has their SiYuan note "${opts.title}" (docId: \`${opts.docId}\`, path: \`${opts.hPath}\`) open in the editor. If their message relates to this note or its questions, use this content; if their message is clearly about an unrelated topic, disregard it.`
+        : `[SiYuan Note Context] — the learner launched this session from their SiYuan note "${opts.title}" (docId: \`${opts.docId}\`, path: \`${opts.hPath}\`).`;
+
     const content = [
-        `[SiYuan Note Context] — the learner launched this session from their SiYuan note "${opts.title}" (docId: \`${opts.docId}\`, path: \`${opts.hPath}\`).`,
+        header,
         `You can read additional sections or related notes using \`siyuan_read_note\`, \`siyuan_find_notes\`, or \`siyuan_grep_notes\`.`,
         "",
         "--- BEGIN NOTE EXCERPT ---",

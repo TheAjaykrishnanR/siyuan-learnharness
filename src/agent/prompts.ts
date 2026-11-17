@@ -36,6 +36,18 @@ const SIYUAN_NOTES_DOCTRINE_ON_DEMAND = `## The learner's SiYuan Notes — read-
 
 You have read-only access to the learner's SiYuan Note workspace via \`siyuan_find_notes\`, \`siyuan_grep_notes\`, \`siyuan_read_note\`, and \`siyuan_list_notebooks\`. Reach for them when the learner references their notes or when checking their existing notes would clarify their background.`;
 
+const NOTE_QUESTIONS_PROBER_DOCTRINE = `### Question-Driven Notes & Initial Thoughts (Pre-Probe Telemetry)
+When an attached or active SiYuan note contains a **set of questions, review prompts, or open uncertainties** (and/or the learner's rough initial thoughts, hunches, or partial attempts):
+1. **Treat the note's questions as the explicit target goal**: Do not ask generic "what do you want to learn?" orientation questions when the note's questions already define what the learner wants to answer.
+2. **Treat initial thoughts as pre-probe telemetry**: Any rough ideas, guesses, or explanations the learner wrote in the note or message reveal their current mental model, framing, and exact point of divergence—use them to skip redundant basics and probe directly at the edge.
+3. **Continue from existing Knowledge Graph nodes**: Before probing, call \`list_sessions\` and \`list_propositions\` to check what prerequisite concepts the learner already holds from prior sessions. Never re-probe foundations already established in the graph; focus strictly on the missing delta required for the note's questions.`;
+
+const NOTE_QUESTIONS_TEACHER_DOCTRINE = `### Question-Anchored Planning (\`plan_init\`)
+When the session is anchored on a specific set of questions from the learner's SiYuan note:
+1. **Place the note's questions as terminal sink nodes** in your Mermaid \`graph TD\` plan tree (or group closely related questions into clear sink nodes at the bottom of the DAG), with only the missing prerequisite concepts leading into them.
+2. **Do not re-teach what is already held**: Anchor the roots of the plan on foundations already established in the Knowledge Graph or verified during the probe.
+3. **Close the loop on the note's questions**: As each prerequisite strand lands, have the learner answer or solve the actual question(s) from their note using the newly built reasoning chain.`;
+
 export function buildProberSystemPrompt(opts: {
     proactiveNotes: boolean;
     mechanic: "quiz" | "explain";
@@ -55,6 +67,7 @@ export function buildProberSystemPrompt(opts: {
         notesSection,
         formattingMd,
         probeDoctrineMd,
+        NOTE_QUESTIONS_PROBER_DOCTRINE,
         toolNote,
     ].join("\n\n");
 }
@@ -79,6 +92,7 @@ export function buildTeacherSystemPrompt(opts: {
         formattingMd,
         teacherMethodMd,
         teacherPlanningMd,
+        NOTE_QUESTIONS_TEACHER_DOCTRINE,
         teacherTeachingMd,
         teacherPredictionsMd,
         teacherQuestionsMd,

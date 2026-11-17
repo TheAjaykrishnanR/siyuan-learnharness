@@ -363,6 +363,9 @@ export async function streamModelStep(opts: {
     callbacks?: StreamStepCallbacks;
 }): Promise<LhAssistantMessage> {
     const { config, systemPrompt, messages, tools, callbacks } = opts;
+    if (callbacks?.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+    }
     if (!config.apiKey) {
         throw new Error(
             `Missing API key for provider "${config.provider}". Open LearnHarness Settings (gear icon) to configure your DeepSeek or Gemini API key.`,
@@ -458,62 +461,83 @@ export async function streamModelStep(opts: {
         throw new Error("Response body is not readable.");
     }
 
+    const onAbort = () => {
+        void reader.cancel().catch(() => {});
+    };
+    callbacks?.signal?.addEventListener("abort", onAbort, { once: true });
+
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() ?? "";
-
-        for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line || !line.startsWith("data:")) continue;
-            const dataStr = line.slice(5).trim();
-            if (dataStr === "[DONE]") continue;
-
-            let chunk: any;
-            try {
-                chunk = JSON.parse(dataStr);
-            } catch {
-                continue;
+    try {
+        while (true) {
+            if (callbacks?.signal?.aborted) {
+                throw new DOMException("Aborted", "AbortError");
             }
-
-            const delta = chunk?.choices?.[0]?.delta;
-            if (!delta) continue;
-
-            if (typeof delta.reasoning_content === "string") {
-                thinkingAcc += delta.reasoning_content;
+            const { done, value } = await reader.read();
+            if (callbacks?.signal?.aborted) {
+                throw new DOMException("Aborted", "AbortError");
             }
-            if (typeof delta.content === "string") {
-                textAcc += delta.content;
-            }
-            if (Array.isArray(delta.tool_calls)) {
-                for (const tcDelta of delta.tool_calls) {
-                    const idx = typeof tcDelta.index === "number" ? tcDelta.index : 0;
-                    let entry = toolCallAccumulators.get(idx);
-                    if (!entry) {
-                        entry = {
-                            id: tcDelta.id || `call_${randomHex(6)}`,
-                            name: tcDelta.function?.name || "",
-                            argsText: "",
-                        };
-                        toolCallAccumulators.set(idx, entry);
-                    } else {
-                        if (tcDelta.id) entry.id = tcDelta.id;
-                        if (tcDelta.function?.name) entry.name += tcDelta.function.name;
-                    }
-                    if (typeof tcDelta.function?.arguments === "string") {
-                        entry.argsText += tcDelta.function.arguments;
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? "";
+
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line || !line.startsWith("data:")) continue;
+                const dataStr = line.slice(5).trim();
+                if (dataStr === "[DONE]") continue;
+
+                let chunk: any;
+                try {
+                    chunk = JSON.parse(dataStr);
+                } catch {
+                    continue;
+                }
+
+                const delta = chunk?.choices?.[0]?.delta;
+                if (!delta) continue;
+
+                if (typeof delta.reasoning_content === "string") {
+                    thinkingAcc += delta.reasoning_content;
+                }
+                if (typeof delta.content === "string") {
+                    textAcc += delta.content;
+                }
+                if (Array.isArray(delta.tool_calls)) {
+                    for (const tcDelta of delta.tool_calls) {
+                        const idx = typeof tcDelta.index === "number" ? tcDelta.index : 0;
+                        let entry = toolCallAccumulators.get(idx);
+                        if (!entry) {
+                            entry = {
+                                id: tcDelta.id || `call_${randomHex(6)}`,
+                                name: tcDelta.function?.name || "",
+                                argsText: "",
+                            };
+                            toolCallAccumulators.set(idx, entry);
+                        } else {
+                            if (tcDelta.id) entry.id = tcDelta.id;
+                            if (tcDelta.function?.name) entry.name += tcDelta.function.name;
+                        }
+                        if (typeof tcDelta.function?.arguments === "string") {
+                            entry.argsText += tcDelta.function.arguments;
+                        }
                     }
                 }
-            }
 
-            callbacks?.onPartialUpdate?.(buildCurrentMessage());
+                if (!callbacks?.signal?.aborted) {
+                    callbacks?.onPartialUpdate?.(buildCurrentMessage());
+                }
+            }
         }
+    } finally {
+        callbacks?.signal?.removeEventListener("abort", onAbort);
+    }
+
+    if (callbacks?.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
     }
 
     const hasToolCalls = Array.from(toolCallAccumulators.values()).some((tc) => Boolean(tc.name));

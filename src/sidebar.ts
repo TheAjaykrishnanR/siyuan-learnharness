@@ -283,10 +283,7 @@ export class SidebarView {
                 return { modeLabel, modelLabel, mechanicLabel };
             },
             onAttachActiveNote: () => {
-                const activeTitle = document.querySelector(
-                    ".layout__wnd--active .protyle:not(.fn__none) .protyle-title, .protyle:not(.fn__none) .protyle-title",
-                ) as HTMLElement | null;
-                const docId = activeTitle?.dataset?.nodeId;
+                const docId = this.getActiveSiyuanDocId();
                 if (!docId) {
                     showMessage("Open a SiYuan note first to insert it.", 2500, "info");
                     return;
@@ -935,6 +932,51 @@ export class SidebarView {
         this.blockInput?.refreshPills();
     }
 
+    private getActiveSiyuanDocId(): string | null {
+        const activeTitle = document.querySelector(
+            ".layout__wnd--active .protyle:not(.fn__none) .protyle-title, .layout__center .protyle:not(.fn__none) .protyle-title",
+        ) as HTMLElement | null;
+        return activeTitle?.dataset?.nodeId ?? null;
+    }
+
+    private async attachSiyuanContextForId(chat: ChatRecord, blockId: string, passive = false): Promise<boolean> {
+        let title = blockId;
+        let hPath = blockId;
+        let fullExcerpt = "";
+        try {
+            const match = await getBlockById(blockId);
+            if (match) {
+                title = (match.content || match.hPath || blockId).slice(0, 80);
+                hPath = match.hPath || blockId;
+                fullExcerpt = match.markdown || match.content || "";
+            }
+            const exported = await readNoteMarkdown(blockId);
+            if (exported.content) {
+                fullExcerpt = exported.content.slice(0, 6000);
+                if (exported.hPath) hPath = exported.hPath;
+            }
+        } catch {
+            // Use block markdown from SQLite if exportMdContent fails on a leaf block
+        }
+        if (!fullExcerpt) return false;
+
+        if (!chat.linkedDocId) {
+            chat.linkedDocId = blockId;
+            chat.linkedDocTitle = title;
+        }
+
+        chat.messages.push(
+            newSiyuanNoteContextMessage({
+                docId: blockId,
+                title,
+                hPath,
+                markdownExcerpt: fullExcerpt,
+                passive,
+            }),
+        );
+        return true;
+    }
+
     private async handleUserSubmit(payload: {
         displayMarkdown: string;
         referencedBlockIds: string[];
@@ -942,39 +984,29 @@ export class SidebarView {
         const chat = this.getActiveChat();
         if (!chat) return;
 
+        let attachedAny = false;
+
         // If the user referenced any SiYuan blocks inside the mini Protyle editor,
         // attach their read-only content so the Prober / Teacher knows the exact block contents.
         if (payload.referencedBlockIds.length > 0) {
             for (const blockId of payload.referencedBlockIds) {
-                let title = blockId;
-                let hPath = blockId;
-                let fullExcerpt = "";
-                try {
-                    const match = await getBlockById(blockId);
-                    if (match) {
-                        title = (match.content || match.hPath || blockId).slice(0, 80);
-                        hPath = match.hPath || blockId;
-                        fullExcerpt = match.markdown || match.content || "";
-                    }
-                    const exported = await readNoteMarkdown(blockId);
-                    if (exported.content) {
-                        fullExcerpt = exported.content.slice(0, 6000);
-                        if (exported.hPath) hPath = exported.hPath;
-                    }
-                } catch {
-                    // Use block markdown from SQLite if exportMdContent fails on a leaf block
-                }
-                if (fullExcerpt) {
-                    chat.messages.push(
-                        newSiyuanNoteContextMessage({
-                            docId: blockId,
-                            title,
-                            hPath,
-                            markdownExcerpt: fullExcerpt,
-                        }),
-                    );
+                if (await this.attachSiyuanContextForId(chat, blockId, false)) {
+                    attachedAny = true;
                 }
             }
+        } else if (
+            chat.messages.length === 0 &&
+            !chat.messages.some((m) => m.role === "custom" && m.customType === "siyuan-note-context")
+        ) {
+            // Passive active-note awareness on the first turn of a fresh session:
+            // automatically expose the currently open SiYuan note so the user can refer to it naturally.
+            const activeDocId = this.getActiveSiyuanDocId();
+            if (activeDocId) {
+                attachedAny = await this.attachSiyuanContextForId(chat, activeDocId, true);
+            }
+        }
+
+        if (attachedAny) {
             this.stores.chatStore.saveChat(chat);
         }
 
