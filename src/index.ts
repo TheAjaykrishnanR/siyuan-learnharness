@@ -7,7 +7,7 @@ import {
 } from "siyuan";
 import { fetchAvailableModels } from "./agent/llm-client";
 import { SessionRunner } from "./agent/session-runner";
-import type { ProviderId } from "./core/ports";
+import type { CustomProviderConfig, ProviderId } from "./core/ports";
 import "./index.scss";
 import { SidebarView } from "./sidebar";
 import { SiYuanHarnessStores } from "./store/siyuan-store";
@@ -201,12 +201,16 @@ export default class LearnHarnessPlugin extends Plugin {
         let customBaseUrl = initial.customBaseUrl || "";
         let customModel = initial.customModel || "";
         let customModels = initial.cachedCustomModels?.length ? [...initial.cachedCustomModels] : [];
+        let customProviders: CustomProviderConfig[] = (initial.customProviders ?? []).map((p) => ({
+            ...p,
+            cachedModels: p.cachedModels ? [...p.cachedModels] : [],
+        }));
 
         let quizzingMechanic = initial.quizzingMechanic || "quiz";
         let proactiveSiyuanNoteSearch = initial.proactiveSiyuanNoteSearch;
         let autoExtractGraph = initial.autoExtractGraph;
 
-        const fetchStatus: Record<ProviderId, { text: string; type: "loading" | "success" | "error" | "" }> = {
+        const fetchStatus: Record<string, { text: string; type: "loading" | "success" | "error" | "" }> = {
             deepseek: { text: "", type: "" },
             gemini: { text: "", type: "" },
             custom: { text: "", type: "" },
@@ -255,6 +259,16 @@ export default class LearnHarnessPlugin extends Plugin {
                         <button type="button" class="lh-provider-subtab ${
                             selectedProviderTab === "custom" ? "lh-provider-subtab--active" : ""
                         }" data-ptab="custom">Custom / SiYuan</button>
+                        ${customProviders
+                            .map(
+                                (cp) => `
+                            <button type="button" class="lh-provider-subtab ${
+                                selectedProviderTab === cp.id ? "lh-provider-subtab--active" : ""
+                            }" data-ptab="${escapeHtml(cp.id)}">${escapeHtml(cp.name || "Custom")}</button>
+                        `,
+                            )
+                            .join("")}
+                        <button type="button" class="lh-provider-subtab lh-provider-subtab--add" data-action="add-custom-provider">+ Add Provider</button>
                     </div>
 
                     ${
@@ -358,7 +372,86 @@ export default class LearnHarnessPlugin extends Plugin {
                             </div>
                         </div>
                     `
-                              : `
+                              : selectedProviderTab !== "custom" &&
+                                  customProviders.some((p) => p.id === selectedProviderTab)
+                                ? (() => {
+                                      const cp = customProviders.find((p) => p.id === selectedProviderTab)!;
+                                      const st = fetchStatus[cp.id] ?? { text: "", type: "" };
+                                      const cpModels = cp.cachedModels ?? [];
+                                      return `
+                        <div class="lh-provider-card" data-cp-id="${escapeHtml(cp.id)}">
+                            <div class="lh-provider-card__header">
+                                <div class="lh-provider-card__title-group">
+                                    <span class="lh-provider-card__title">${escapeHtml(cp.name || "Custom Provider")}</span>
+                                    ${
+                                        currentProvider === cp.id
+                                            ? `<span class="lh-provider-card__active-badge">● Active Provider</span>`
+                                            : ""
+                                    }
+                                </div>
+                                <div style="display:flex;gap:6px;">
+                                    ${
+                                        currentProvider !== cp.id
+                                            ? `<button type="button" class="b3-button b3-button--outline" data-action="set-active" data-provider="${escapeHtml(cp.id)}">Set as Active</button>`
+                                            : ""
+                                    }
+                                    <button type="button" class="b3-button b3-button--cancel" data-action="delete-custom-provider" data-provider="${escapeHtml(cp.id)}">Delete</button>
+                                </div>
+                            </div>
+
+                            <div class="lh-setting-field">
+                                <label class="lh-setting-field__label">Provider Name</label>
+                                <input type="text" class="b3-text-field fn__block" id="lh-cp-name" placeholder="e.g. OpenRouter, Ollama, Groq" value="${escapeHtml(
+                                    cp.name,
+                                )}" />
+                            </div>
+
+                            <div class="lh-setting-field">
+                                <label class="lh-setting-field__label">API Base URL / Endpoint</label>
+                                <input type="text" class="b3-text-field fn__block" id="lh-cp-endpoint" placeholder="https://api.openai.com/v1" value="${escapeHtml(
+                                    cp.baseUrl,
+                                )}" />
+                            </div>
+
+                            <div class="lh-setting-field">
+                                <label class="lh-setting-field__label">API Key</label>
+                                <div class="lh-key-input-wrap">
+                                    <input type="password" class="b3-text-field fn__block" id="lh-cp-key" placeholder="sk-... (optional for local Ollama)" value="${escapeHtml(
+                                        cp.apiKey,
+                                    )}" />
+                                    <button type="button" class="b3-button b3-button--text" data-action="toggle-pwd" data-target="lh-cp-key">Show</button>
+                                </div>
+                            </div>
+
+                            <div class="lh-setting-field">
+                                <div class="lh-setting-field__label-row">
+                                    <label class="lh-setting-field__label">Model Name</label>
+                                    <button type="button" class="lh-fetch-btn" data-action="fetch-models" data-provider="${escapeHtml(cp.id)}">↻ Fetch Models</button>
+                                </div>
+                                <div id="lh-cp-status" class="lh-fetch-status ${st.type ? `lh-fetch-status--${st.type}` : ""}">${escapeHtml(st.text)}</div>
+                                ${
+                                    cpModels.length > 0
+                                        ? `
+                                    <select class="b3-select fn__block" id="lh-cp-model-select">
+                                        ${renderModelOptions(cpModels, cp.model)}
+                                    </select>
+                                    <input type="text" class="b3-text-field fn__block" id="lh-cp-model-custom" placeholder="Custom model name" value="${escapeHtml(
+                                        cp.model,
+                                    )}" style="display: ${
+                                      !cpModels.includes(cp.model) ? "block" : "none"
+                                  }; margin-top: 6px;" />
+                                `
+                                        : `
+                                    <input type="text" class="b3-text-field fn__block" id="lh-cp-model" placeholder="e.g. openai/gpt-4o or llama3.2" value="${escapeHtml(
+                                        cp.model,
+                                    )}" />
+                                `
+                                }
+                            </div>
+                        </div>
+                    `;
+                                  })()
+                                : `
                         <div class="lh-provider-card">
                             <div class="lh-provider-card__header">
                                 <div class="lh-provider-card__title-group">
@@ -490,6 +583,28 @@ export default class LearnHarnessPlugin extends Plugin {
                 if (cModel) customModel = cModel.value.trim();
             }
 
+            const cpCard = container.querySelector("[data-cp-id]") as HTMLElement | null;
+            if (cpCard) {
+                const cpId = cpCard.dataset.cpId;
+                const cp = customProviders.find((p) => p.id === cpId);
+                if (cp) {
+                    const cpName = container.querySelector("#lh-cp-name") as HTMLInputElement | null;
+                    if (cpName) cp.name = cpName.value.trim() || "Custom Provider";
+                    const cpEp = container.querySelector("#lh-cp-endpoint") as HTMLInputElement | null;
+                    if (cpEp) cp.baseUrl = cpEp.value.trim();
+                    const cpKey = container.querySelector("#lh-cp-key") as HTMLInputElement | null;
+                    if (cpKey) cp.apiKey = cpKey.value.trim();
+                    const cpSel = container.querySelector("#lh-cp-model-select") as HTMLSelectElement | null;
+                    const cpCustom = container.querySelector("#lh-cp-model-custom") as HTMLInputElement | null;
+                    if (cpSel) {
+                        cp.model = cpSel.value === "__custom__" ? cpCustom?.value.trim() || "" : cpSel.value;
+                    } else {
+                        const cpModel = container.querySelector("#lh-cp-model") as HTMLInputElement | null;
+                        if (cpModel) cp.model = cpModel.value.trim();
+                    }
+                }
+            }
+
             const mech = container.querySelector("#lh-pref-mechanic") as HTMLSelectElement | null;
             if (mech) quizzingMechanic = mech.value === "explain" ? "explain" : "quiz";
             const pro = container.querySelector("#lh-pref-proactive") as HTMLInputElement | null;
@@ -503,10 +618,15 @@ export default class LearnHarnessPlugin extends Plugin {
             let key = "";
             let base = "";
 
+            const cpMatch = customProviders.find((p) => p.id === provider);
+
             if (provider === "deepseek") {
                 key = deepseekApiKey;
             } else if (provider === "gemini") {
                 key = geminiApiKey;
+            } else if (cpMatch) {
+                key = cpMatch.apiKey;
+                base = cpMatch.baseUrl;
             } else {
                 key = customApiKey;
                 base = customBaseUrl;
@@ -517,7 +637,7 @@ export default class LearnHarnessPlugin extends Plugin {
                 }
             }
 
-            if (!key && provider !== "custom") {
+            if (!key && provider !== "custom" && !cpMatch) {
                 fetchStatus[provider] = { text: "Please enter an API key first.", type: "error" };
                 renderView();
                 return;
@@ -527,7 +647,8 @@ export default class LearnHarnessPlugin extends Plugin {
             renderView();
 
             try {
-                const fetched = await fetchAvailableModels(provider, key, base);
+                const fetchKind = cpMatch ? "custom" : provider;
+                const fetched = await fetchAvailableModels(fetchKind, key, base);
                 const ids = fetched.map((m) => m.id);
                 if (ids.length === 0) throw new Error("No models returned for this key.");
 
@@ -541,6 +662,11 @@ export default class LearnHarnessPlugin extends Plugin {
                     if (!geminiModels.includes(geminiModel)) {
                         geminiModel = geminiModels[0];
                     }
+                } else if (cpMatch) {
+                    cpMatch.cachedModels = ids;
+                    if (!cpMatch.model && ids.length > 0) {
+                        cpMatch.model = ids[0];
+                    }
                 } else {
                     customModels = ids;
                     if (!customModel && customModels.length > 0) {
@@ -553,6 +679,7 @@ export default class LearnHarnessPlugin extends Plugin {
                     cachedDeepseekModels: deepseekModels,
                     cachedGeminiModels: geminiModels,
                     cachedCustomModels: customModels,
+                    customProviders,
                     deepseekModel,
                     geminiModel,
                     customModel,
@@ -586,6 +713,10 @@ export default class LearnHarnessPlugin extends Plugin {
                 const sel = target as HTMLSelectElement;
                 const customEl = container.querySelector("#lh-custom-model-custom") as HTMLElement | null;
                 if (customEl) customEl.style.display = sel.value === "__custom__" ? "block" : "none";
+            } else if (target.id === "lh-cp-model-select") {
+                const sel = target as HTMLSelectElement;
+                const customEl = container.querySelector("#lh-cp-model-custom") as HTMLElement | null;
+                if (customEl) customEl.style.display = sel.value === "__custom__" ? "block" : "none";
             }
             syncInputsToMemory();
         });
@@ -600,6 +731,24 @@ export default class LearnHarnessPlugin extends Plugin {
                 renderView();
             } else if (btn.dataset.ptab) {
                 selectedProviderTab = btn.dataset.ptab as any;
+                renderView();
+            } else if (btn.dataset.action === "add-custom-provider") {
+                const newId = `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+                customProviders.push({
+                    id: newId,
+                    name: `Custom ${customProviders.length + 1}`,
+                    baseUrl: "https://api.openai.com/v1",
+                    apiKey: "",
+                    model: "",
+                    cachedModels: [],
+                });
+                selectedProviderTab = newId;
+                renderView();
+            } else if (btn.dataset.action === "delete-custom-provider" && btn.dataset.provider) {
+                const delId = btn.dataset.provider;
+                customProviders = customProviders.filter((p) => p.id !== delId);
+                if (currentProvider === delId) currentProvider = "deepseek";
+                selectedProviderTab = currentProvider;
                 renderView();
             } else if (btn.dataset.action === "set-active" && btn.dataset.provider) {
                 currentProvider = btn.dataset.provider as ProviderId;
@@ -632,6 +781,7 @@ export default class LearnHarnessPlugin extends Plugin {
                     customApiKey,
                     customBaseUrl,
                     customModel,
+                    customProviders,
                     cachedDeepseekModels: deepseekModels,
                     cachedGeminiModels: geminiModels,
                     cachedCustomModels: customModels,

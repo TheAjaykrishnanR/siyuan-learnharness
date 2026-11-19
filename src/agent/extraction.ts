@@ -32,17 +32,20 @@ import { resolveModelConfig, streamModelStep } from "./llm-client";
 import { healToolRecord, proberGraphTools, type AgentToolDefinition } from "./tools";
 
 const EXTRACTOR_SYSTEM_PROMPT = `You are the Knowledge Graph Extractor for a learning harness.
-Your job is to extract the true, world-facing propositions and the reasoning chains (arguments) from the provided teaching passages or personal notes, and submit them by calling the \`submit\` tool.
+Your job is to extract the true, world-facing propositions and the reasoning chains (arguments) from the provided teaching passages or personal notes, AND capture topic-scoped cognitive annotations when learner thinking is present, then submit them by calling the \`submit\` tool.
 
 ### Rules for Propositions
-1. Every proposition must be a **true, self-contained, world-facing claim** stated at full precision.
-2. Never reference "the learner", "the teacher", "the session", or "the note". Misconceptions corrected in the text are stated only as the true correction.
+1. Every proposition's \`statement\` must be a **true, self-contained, world-facing claim** stated at full precision.
+2. Never reference "the learner", "the teacher", "the session", or "the note" inside \`name\` or \`statement\`. Misconceptions corrected in the text are stated in \`statement\` only as the true correction.
 3. Give each proposition:
    - \`id\`: a short local id like \`"p1"\`, \`"p2"\`, ...
    - \`name\`: a compact 2–5 word glossary-style handle (e.g., \`"Chain rule"\`, \`"Gradient descent step"\`).
    - \`statement\`: the full, self-contained true proposition.
    - \`aliases\`: 1–3 verbatim phrasings used in the source text.
    - \`messageId\` (when extracting from a session with \`TEACHER [msg_...]\` tags): copy the exact \`msg_...\` id of the passage where the proposition was articulated.
+   - \`mentalFramings\` (optional): 0–2 concise notes on analogies, metaphors, or intuitive framings that clicked for the learner on this specific concept (when \`LEARNER\` / \`LEARNER THINKING\` lines are present).
+   - \`misconceptions\` (optional): 0–2 concise notes on specific conceptual traps, biases, or confusions the learner expressed on this concept.
+   - \`fragilityNotes\` (optional): 0–2 concise notes on nuances or boundary conditions where the learner's reasoning was hesitant or shaky.
 
 ### Rules for Reasoning Chains
 1. A chain \`{ premises: ["p1", "p2"], conclusion: "p3" }\` means those premises **jointly entail or support** that conclusion in the source text.
@@ -86,6 +89,9 @@ async function runExtractorStage(
                 statement: Type.String({ description: "Full self-contained true proposition" }),
                 aliases: Type.Optional(Type.Array(Type.String())),
                 messageId: Type.Optional(Type.String({ description: "Exact TEACHER [msg_...] id if present" })),
+                mentalFramings: Type.Optional(Type.Array(Type.String())),
+                misconceptions: Type.Optional(Type.Array(Type.String())),
+                fragilityNotes: Type.Optional(Type.Array(Type.String())),
             }),
         ),
         chains: Type.Array(
@@ -104,6 +110,10 @@ async function runExtractorStage(
             execute: async (_id, args) => {
                 const rawProps = Array.isArray(args.propositions) ? args.propositions : [];
                 const rawChains = Array.isArray(args.chains) ? args.chains : [];
+                const strList = (v: unknown): string[] | undefined =>
+                    Array.isArray(v)
+                        ? v.map((x) => String(x).trim()).filter((x) => x.length > 0)
+                        : undefined;
                 const propositions: ExtractedProposition[] = rawProps
                     .filter((p: any) => p && typeof p.id === "string" && typeof p.name === "string" && typeof p.statement === "string")
                     .map((p: any) => ({
@@ -115,6 +125,9 @@ async function runExtractorStage(
                             typeof p.messageId === "string" && (!validMessageIds || validMessageIds.has(p.messageId))
                                 ? p.messageId
                                 : undefined,
+                        mentalFramings: strList(p.mentalFramings),
+                        misconceptions: strList(p.misconceptions),
+                        fragilityNotes: strList(p.fragilityNotes),
                     }));
                 const chains: ExtractedChain[] = rawChains
                     .filter((c: any) => c && Array.isArray(c.premises) && typeof c.conclusion === "string")
@@ -272,6 +285,56 @@ async function runAuditorStage(
     return verdicts;
 }
 
+function buildBatchSourceText(
+    allMessages: readonly LhMessage[],
+    batch: readonly CoverageSlot[],
+): { sourceText: string; validMessageIds: Set<string> } {
+    const validMessageIds = new Set<string>();
+    const batchMsgIds = new Set(batch.map((s) => s.message.id));
+    for (const id of batchMsgIds) validMessageIds.add(id);
+
+    const firstIdx = allMessages.findIndex((m) => batchMsgIds.has(m.id));
+    let lastIdx = firstIdx;
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+        if (batchMsgIds.has(allMessages[i]!.id)) {
+            lastIdx = i;
+            break;
+        }
+    }
+    if (firstIdx < 0) return { sourceText: "", validMessageIds };
+
+    // Include any learner response / thinking immediately following the last teacher message in this batch
+    let endIdx = lastIdx;
+    while (endIdx + 1 < allMessages.length && allMessages[endIdx + 1]!.role !== "assistant") {
+        endIdx++;
+    }
+
+    const lines: string[] = [];
+    for (let i = firstIdx; i <= endIdx; i++) {
+        const msg = allMessages[i]!;
+        if (msg.role === "assistant" && batchMsgIds.has(msg.id)) {
+            lines.push(...messageViewLines(msg, msg.id));
+        } else if (msg.role === "user" && msg.content.trim()) {
+            lines.push(`LEARNER: ${msg.content.trim()}`);
+        } else if (msg.role === "toolResult" && msg.details && typeof msg.details === "object") {
+            const det = msg.details as Record<string, unknown>;
+            const parts: string[] = [];
+            if (typeof det.answer === "string" && det.answer.trim()) {
+                parts.push(`LEARNER ANSWER: ${det.answer.trim()}`);
+            }
+            if (typeof det.confidence === "string" && det.confidence.trim()) {
+                parts.push(`CONFIDENCE: ${det.confidence.trim()}`);
+            }
+            if (typeof det.thinking === "string" && det.thinking.trim()) {
+                parts.push(`LEARNER THINKING: ${det.thinking.trim()}`);
+            }
+            if (parts.length > 0) lines.push(parts.join("\n"));
+        }
+    }
+
+    return { sourceText: lines.join("\n\n"), validMessageIds };
+}
+
 /** Extract uncovered teacher prose from a chat session into the Knowledge Graph. */
 export async function extractFromChat(
     deps: ExtractionDependencies,
@@ -294,13 +357,7 @@ export async function extractFromChat(
     const totalStats: EmissionStats = { nodes: 0, chains: 0, droppedChains: 0 };
 
     for (const batch of runs) {
-        const lines: string[] = [];
-        const validMessageIds = new Set<string>();
-        for (const slot of batch) {
-            validMessageIds.add(slot.message.id);
-            lines.push(...messageViewLines(slot.message, slot.message.id));
-        }
-        const sourceText = lines.join("\n\n");
+        const { sourceText, validMessageIds } = buildBatchSourceText(chat.messages, batch);
         if (!sourceText.trim()) continue;
 
         const digest = buildDigestForSource(deps, chatId);

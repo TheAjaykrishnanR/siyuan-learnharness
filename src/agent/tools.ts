@@ -14,7 +14,13 @@ import {
     type GraphNode,
 } from "../core/contracts";
 import { healEncodedArguments } from "../core/argument-heal";
-import { graphSessionIndex, graphSessionPropositions, resolveTargetId, type GraphDeps } from "../core/graph";
+import {
+    graphSessionIndex,
+    graphSessionPropositions,
+    resolveTargetId,
+    searchTopicMindset,
+    type GraphDeps,
+} from "../core/graph";
 import { parseMermaidPlan } from "../core/mermaid-plan";
 import { activeProblemOf, danglingQuestionOf, hasProbeDone } from "../core/messages";
 import { createTree, PlanTreeError } from "../core/plan-tree";
@@ -267,6 +273,13 @@ const listPropositionsSchema = Type.Object({
         description: "The session ID (chatId or src_... note ID) returned by list_sessions.",
     }),
 });
+const inspectTopicMindsetSchema = Type.Object({
+    query: Type.String({
+        minLength: 1,
+        description:
+            "Space-separated topic/concept keywords (e.g. 'bayes conditional probability' or 'react useEffect closure') to look up the learner's existing nodes, mental framings, past misconceptions, and raw thinking traces for this topic.",
+    }),
+});
 
 export function proberGraphTools(deps: GraphDeps): Record<string, AgentToolDefinition> {
     return {
@@ -296,6 +309,47 @@ export function proberGraphTools(deps: GraphDeps): Record<string, AgentToolDefin
                 if (props.length === 0) return { text: `(no propositions found for session ${sessionId})` };
                 const lines = props.map((p) => `[${p.nodeId}] ${p.name}: ${p.statement}`);
                 return { text: lines.join("\n"), details: { sessionId, count: props.length } };
+            },
+        },
+        inspect_topic_mindset: {
+            name: "inspect_topic_mindset",
+            description:
+                "Retrieve topic-scoped cognitive context from the learner's Knowledge Graph: matching propositions along with the learner's personal mental framings/analogies, past misconceptions, fragility notes, and raw thinking traces from prior sessions on this topic.",
+            parameters: inspectTopicMindsetSchema,
+            execute: async (_id, args) => {
+                const query = String(args.query ?? "").trim();
+                if (!query) return invalidInputResult("inspect_topic_mindset", ["query is required"]);
+                const res = searchTopicMindset(deps, query);
+                if (res.nodes.length === 0 && res.thinkingTraces.length === 0) {
+                    return { text: `(no prior graph nodes or thinking traces matched "${query}")` };
+                }
+                const sections: string[] = [];
+                if (res.nodes.length > 0) {
+                    const nodeLines = res.nodes.map((n) => {
+                        const parts = [`[${n.nodeId}] **${n.name}**: ${n.statement}`];
+                        if (n.mentalFramings.length > 0) {
+                            parts.push(`  - Mental framing: ${n.mentalFramings.join(" | ")}`);
+                        }
+                        if (n.misconceptions.length > 0) {
+                            parts.push(`  - Past misconceptions: ${n.misconceptions.join(" | ")}`);
+                        }
+                        if (n.fragilityNotes.length > 0) {
+                            parts.push(`  - Fragility notes: ${n.fragilityNotes.join(" | ")}`);
+                        }
+                        return parts.join("\n");
+                    });
+                    sections.push(`MATCHING KNOWLEDGE NODES & COGNITIVE ANNOTATIONS:\n${nodeLines.join("\n")}`);
+                }
+                if (res.thinkingTraces.length > 0) {
+                    const traceLines = res.thinkingTraces.map(
+                        (t) => `- [${t.chatTitle}] "${t.thinking}"`,
+                    );
+                    sections.push(`RAW LEARNER THINKING TRACES FROM RELATED SESSIONS:\n${traceLines.join("\n")}`);
+                }
+                return {
+                    text: sections.join("\n\n"),
+                    details: { query, nodeCount: res.nodes.length, traceCount: res.thinkingTraces.length },
+                };
             },
         },
     };

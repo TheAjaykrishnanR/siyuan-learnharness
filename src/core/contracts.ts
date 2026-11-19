@@ -90,6 +90,12 @@ export interface GraphNode {
     aliases: string[];
     createdAt: string;
     provenance: ProvenancePoint[];
+    /** Learner's personal metaphors, intuitions, or framings that made this concept click */
+    mentalFramings?: string[];
+    /** Specific conceptual traps, biases, or confusions encountered and repaired on this node */
+    misconceptions?: string[];
+    /** Nuances or boundary conditions where confidence/reasoning was shaky */
+    fragilityNotes?: string[];
 }
 
 export interface SessionCheckpoint {
@@ -110,6 +116,9 @@ export interface ExtractedProposition {
     statement: string;
     aliases: string[];
     messageId?: string;
+    mentalFramings?: string[];
+    misconceptions?: string[];
+    fragilityNotes?: string[];
 }
 
 export interface ExtractedChain {
@@ -246,7 +255,7 @@ export interface LhMarkerMessage {
 export type LhMessage = LhUserMessage | LhAssistantMessage | LhToolResultMessage | LhMarkerMessage;
 
 export interface ChatSettings {
-    provider?: "deepseek" | "gemini" | "custom";
+    provider?: string;
     modelId?: string;
     quizzingMechanic?: "quiz" | "explain";
 }

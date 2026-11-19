@@ -24,10 +24,21 @@ export interface ComposerPillsState {
     mechanicLabel: string;
 }
 
+export interface ModelPickerGroup {
+    providerId: string;
+    providerLabel: string;
+    models: string[];
+    activeProviderId: string;
+    activeModelId: string;
+}
+
 export interface SiYuanBlockInputOptions {
     app: App;
     placeholder?: string;
     getPillsState?: () => ComposerPillsState;
+    getModelGroups?: () => ModelPickerGroup[];
+    onSelectModel?: (providerId: string, modelId: string) => void;
+    onOpenSettings?: () => void;
     onToggleMode?: () => void;
     onCycleModel?: () => void;
     onToggleMechanic?: () => void;
@@ -95,7 +106,9 @@ export class SiYuanBlockInput {
     private modePillTextEl!: HTMLElement;
     private modelPillTextEl!: HTMLElement;
     private mechanicPillTextEl!: HTMLElement;
+    private modelMenuEl!: HTMLElement;
     private actionBtnEl!: HTMLButtonElement;
+    private boundDocClick: ((e: MouseEvent) => void) | null = null;
 
     constructor(container: HTMLElement, opts: SiYuanBlockInputOptions) {
         this.container = container;
@@ -104,6 +117,10 @@ export class SiYuanBlockInput {
     }
 
     public destroy(): void {
+        if (this.boundDocClick) {
+            document.removeEventListener("click", this.boundDocClick);
+            this.boundDocClick = null;
+        }
         try {
             this.protyleInstance?.destroy();
         } catch {
@@ -155,7 +172,7 @@ export class SiYuanBlockInput {
                     </button>
                 </div>
                 <div class="lh-composer-card__right">
-                    <button class="lh-composer-pill" type="button" data-composer-action="cycle-model" title="Click to switch LLM provider/model">
+                    <button class="lh-composer-pill" type="button" data-composer-action="cycle-model" title="Click to choose LLM provider & model">
                         ${ATOM_ICON_SVG}
                         <span class="lh-pill-model-text">${escapeHtml(pills.modelLabel)}</span>
                     </button>
@@ -169,9 +186,12 @@ export class SiYuanBlockInput {
                 </div>
             </div>
         `;
-        this.container.innerHTML = "";
-        this.container.appendChild(this.cardEl);
+        this.modelMenuEl = document.createElement("div");
+        this.modelMenuEl.className = "lh-model-menu fn__none";
 
+        this.container.innerHTML = "";
+        this.container.appendChild(this.modelMenuEl);
+        this.container.appendChild(this.cardEl);
         this.protyleHostEl = this.cardEl.querySelector(".lh-composer-card__editor") as HTMLElement;
         this.modePillTextEl = this.cardEl.querySelector(".lh-pill-mode-text") as HTMLElement;
         this.modelPillTextEl = this.cardEl.querySelector(".lh-pill-model-text") as HTMLElement;
@@ -467,22 +487,105 @@ export class SiYuanBlockInput {
         }
     }
 
+    private closeModelMenu(): void {
+        this.modelMenuEl?.classList.add("fn__none");
+    }
+
+    private toggleModelMenu(): void {
+        if (!this.opts.getModelGroups) {
+            this.opts.onCycleModel?.();
+            this.refreshPills();
+            return;
+        }
+        const isOpen = !this.modelMenuEl.classList.contains("fn__none");
+        if (isOpen) {
+            this.closeModelMenu();
+            return;
+        }
+        const groups = this.opts.getModelGroups();
+        const groupsHtml = groups
+            .filter((g) => g.models.length > 0)
+            .map(
+                (g) => `
+                <div class="lh-model-menu__group">
+                    <div class="lh-model-menu__group-label">${escapeHtml(g.providerLabel)}</div>
+                    ${g.models
+                        .map((m) => {
+                            const isActive = g.providerId === g.activeProviderId && m === g.activeModelId;
+                            return `
+                            <button type="button" class="lh-model-menu__item ${
+                                isActive ? "lh-model-menu__item--active" : ""
+                            }" data-model-provider="${escapeHtml(g.providerId)}" data-model-id="${escapeHtml(m)}">
+                                <span class="lh-model-menu__check">${isActive ? "✓" : ""}</span>
+                                <span class="lh-model-menu__name">${escapeHtml(m)}</span>
+                            </button>
+                        `;
+                        })
+                        .join("")}
+                </div>
+            `,
+            )
+            .join("");
+
+        this.modelMenuEl.innerHTML = `
+            <div class="lh-model-menu__list">
+                ${groupsHtml || `<div class="lh-model-menu__empty">No models configured yet.</div>`}
+            </div>
+            <div class="lh-model-menu__footer">
+                <button type="button" class="lh-model-menu__config-btn" data-model-action="open-settings">⚙ Configure Providers &amp; Models...</button>
+            </div>
+        `;
+        this.modelMenuEl.classList.remove("fn__none");
+    }
+
     private bindEvents(): void {
+        this.boundDocClick = (e: MouseEvent) => {
+            if (!this.container.contains(e.target as Node)) {
+                this.closeModelMenu();
+            }
+        };
+        document.addEventListener("click", this.boundDocClick);
+
+        this.modelMenuEl.addEventListener("click", (e) => {
+            const target = e.target as HTMLElement;
+            const cfgBtn = target.closest('[data-model-action="open-settings"]') as HTMLElement | null;
+            if (cfgBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                this.closeModelMenu();
+                this.opts.onOpenSettings?.();
+                return;
+            }
+            const itemBtn = target.closest("[data-model-provider][data-model-id]") as HTMLElement | null;
+            if (itemBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                const pid = itemBtn.dataset.modelProvider!;
+                const mid = itemBtn.dataset.modelId!;
+                this.closeModelMenu();
+                this.opts.onSelectModel?.(pid, mid);
+                this.refreshPills();
+            }
+        });
+
         // Footer pill and icon actions
         this.cardEl.addEventListener("click", (e) => {
             const btn = (e.target as HTMLElement).closest("[data-composer-action]") as HTMLElement | null;
             if (!btn) return;
             e.preventDefault();
+            e.stopPropagation();
             const act = btn.dataset.composerAction;
             if (act === "attach-note") {
+                this.closeModelMenu();
                 this.opts.onAttachActiveNote?.();
             } else if (act === "toggle-mode") {
+                this.closeModelMenu();
                 this.opts.onToggleMode?.();
                 this.refreshPills();
             } else if (act === "cycle-model") {
-                this.opts.onCycleModel?.();
-                this.refreshPills();
+                this.toggleModelMenu();
             } else if (act === "toggle-mechanic") {
+                this.closeModelMenu();
                 this.opts.onToggleMechanic?.();
                 this.refreshPills();
             }

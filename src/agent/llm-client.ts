@@ -222,7 +222,15 @@ export function resolveModelConfig(
         return { provider, apiKey, model, baseUrl };
     }
 
-    // custom or SiYuan AI fallback
+    const addedCustom = settings.customProviders?.find((p) => p.id === provider);
+    if (addedCustom) {
+        const apiKey = addedCustom.apiKey.trim();
+        const baseUrl = (addedCustom.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+        const model = override?.modelId || addedCustom.model || addedCustom.cachedModels?.[0] || "gpt-4o";
+        return { provider: addedCustom.id, apiKey, model, baseUrl };
+    }
+
+    // legacy custom or SiYuan AI fallback
     let apiKey = settings.customApiKey.trim();
     let baseUrl = (settings.customBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
     let model = override?.modelId || settings.customModel || "gpt-4o";

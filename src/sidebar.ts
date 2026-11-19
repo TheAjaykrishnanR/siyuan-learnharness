@@ -35,7 +35,7 @@ import { getBlockById, readNoteMarkdown } from "./siyuan/client";
 import type { SiYuanHarnessStores } from "./store/siyuan-store";
 import { KnowledgeGraphView } from "./ui/graph-view";
 import { escapeHtml, renderMarkdown } from "./ui/markdown";
-import { SiYuanBlockInput } from "./ui/siyuan-block-input";
+import { SiYuanBlockInput, type ModelPickerGroup } from "./ui/siyuan-block-input";
 
 export interface SidebarCallbacks {
     app: App;
@@ -271,17 +271,113 @@ export class SidebarView {
                 const chat = this.getActiveChat();
                 const s = this.stores.settingsStore.get();
                 const provider = chat?.settings?.provider ?? s.activeProvider;
+                const cp = s.customProviders?.find((p) => p.id === provider);
                 const modelLabel =
                     chat?.settings?.modelId ??
                     (provider === "deepseek"
                         ? s.deepseekModel
                         : provider === "gemini"
                           ? s.geminiModel
-                          : s.customModel);
+                          : cp
+                            ? cp.model || cp.name
+                            : s.customModel);
                 const modeLabel = chat?.kind === "practice" ? "Practice mode" : "Teach mode";
                 const mechanicLabel = s.quizzingMechanic === "explain" ? "Explain" : "Quiz";
                 return { modeLabel, modelLabel, mechanicLabel };
             },
+            getModelGroups: (): ModelPickerGroup[] => {
+                const chat = this.getActiveChat();
+                const s = this.stores.settingsStore.get();
+                const activeProviderId = chat?.settings?.provider ?? s.activeProvider;
+                const activeCp = s.customProviders?.find((p) => p.id === activeProviderId);
+                const activeModelId =
+                    chat?.settings?.modelId ??
+                    (activeProviderId === "deepseek"
+                        ? s.deepseekModel
+                        : activeProviderId === "gemini"
+                          ? s.geminiModel
+                          : activeCp
+                            ? activeCp.model
+                            : s.customModel);
+
+                const uniq = (list: string[]): string[] => {
+                    const out: string[] = [];
+                    for (const item of list) {
+                        const t = item.trim();
+                        if (t && !out.includes(t)) out.push(t);
+                    }
+                    return out;
+                };
+
+                const groups: ModelPickerGroup[] = [
+                    {
+                        providerId: "deepseek",
+                        providerLabel: "DeepSeek",
+                        models: uniq([
+                            ...(s.cachedDeepseekModels ?? ["deepseek-chat", "deepseek-reasoner"]),
+                            s.deepseekModel,
+                        ]),
+                        activeProviderId,
+                        activeModelId,
+                    },
+                    {
+                        providerId: "gemini",
+                        providerLabel: "Google Gemini",
+                        models: uniq([
+                            ...(s.cachedGeminiModels ?? ["gemini-2.5-flash", "gemini-2.5-pro"]),
+                            s.geminiModel,
+                        ]),
+                        activeProviderId,
+                        activeModelId,
+                    },
+                ];
+
+                for (const cp of s.customProviders ?? []) {
+                    groups.push({
+                        providerId: cp.id,
+                        providerLabel: cp.name || "Custom Provider",
+                        models: uniq([...(cp.cachedModels ?? []), cp.model]),
+                        activeProviderId,
+                        activeModelId,
+                    });
+                }
+
+                const legacyModels = uniq([...(s.cachedCustomModels ?? []), s.customModel]);
+                if (legacyModels.length > 0 || s.customApiKey || s.useSiyuanAiFallback) {
+                    groups.push({
+                        providerId: "custom",
+                        providerLabel: "Custom / SiYuan",
+                        models: legacyModels.length > 0 ? legacyModels : ["gpt-4o"],
+                        activeProviderId,
+                        activeModelId,
+                    });
+                }
+
+                return groups;
+            },
+            onSelectModel: (providerId: string, modelId: string) => {
+                const s = this.stores.settingsStore.get();
+                if (providerId === "deepseek") {
+                    this.stores.settingsStore.save({ activeProvider: "deepseek", deepseekModel: modelId });
+                } else if (providerId === "gemini") {
+                    this.stores.settingsStore.save({ activeProvider: "gemini", geminiModel: modelId });
+                } else if (providerId === "custom") {
+                    this.stores.settingsStore.save({ activeProvider: "custom", customModel: modelId });
+                } else {
+                    const updated = (s.customProviders ?? []).map((p) =>
+                        p.id === providerId ? { ...p, model: modelId } : p,
+                    );
+                    this.stores.settingsStore.save({ activeProvider: providerId, customProviders: updated });
+                }
+
+                const chat = this.getActiveChat();
+                if (chat?.settings) {
+                    chat.settings = { ...chat.settings, provider: providerId, modelId };
+                    this.stores.chatStore.saveChat(chat);
+                }
+                showMessage(`Model: ${modelId}`, 2000, "info");
+            },
+            onOpenSettings: () => this.callbacks.onOpenSettings(),
             onAttachActiveNote: () => {
                 const docId = this.getActiveSiyuanDocId();
                 if (!docId) {
@@ -851,6 +947,13 @@ export class SidebarView {
                     `
                     }
 
+                    <div class="lh-q-thinking-wrap">
+                        <label class="lh-q-thinking-label">Thinking (optional — share your reasoning, hunches, or confusion)</label>
+                        <textarea class="b3-text-field fn__block lh-q-thinking" rows="2" placeholder="Think out loud... how are you approaching this?">${escapeHtml(
+                            draft.thinking,
+                        )}</textarea>
+                    </div>
+
                     ${
                         qd.kind === "quiz"
                             ? `
@@ -887,6 +990,10 @@ export class SidebarView {
             const ftEl = this.questionSlotEl.querySelector(".lh-q-freetext") as HTMLTextAreaElement | null;
             ftEl?.addEventListener("input", () => {
                 draft.freeText = ftEl.value;
+            });
+            const thinkingEl = this.questionSlotEl.querySelector(".lh-q-thinking") as HTMLTextAreaElement | null;
+            thinkingEl?.addEventListener("input", () => {
+                draft.thinking = thinkingEl.value;
             });
             const otherEl = this.questionSlotEl.querySelector(".lh-q-other") as HTMLInputElement | null;
             otherEl?.addEventListener("input", () => {

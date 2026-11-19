@@ -166,6 +166,26 @@ function pointOf(chatId: string, messageId?: string): ProvenancePoint[] {
 const samePoint = (a: ProvenancePoint, b: ProvenancePoint): boolean =>
     a.chatId === b.chatId && a.messageId === b.messageId;
 
+function nonEmptyUnique(items?: readonly string[]): string[] | undefined {
+    if (!items || items.length === 0) return undefined;
+    const out: string[] = [];
+    for (const raw of items) {
+        const s = raw.trim();
+        if (s && !out.includes(s)) out.push(s);
+    }
+    return out.length > 0 ? out : undefined;
+}
+
+function mergeStringLists(target: string[] | undefined, incoming: readonly string[] | undefined): string[] | undefined {
+    if (!incoming || incoming.length === 0) return target;
+    const out = target ? [...target] : [];
+    for (const raw of incoming) {
+        const s = raw.trim();
+        if (s && !out.includes(s)) out.push(s);
+    }
+    return out.length > 0 ? out : undefined;
+}
+
 export function mergeFindings(
     chatId: string,
     findings: SessionFindings,
@@ -185,6 +205,9 @@ export function mergeFindings(
         if (mapping.has(p.id)) continue;
         const points = pointOf(chatId, p.messageId);
         const linkTo = linkOf.get(p.id);
+        const mentalFramings = nonEmptyUnique(p.mentalFramings);
+        const misconceptions = nonEmptyUnique(p.misconceptions);
+        const fragilityNotes = nonEmptyUnique(p.fragilityNotes);
         let graphNodeId: string;
         if (linkTo !== undefined && existingIds.has(linkTo)) {
             graphNodeId = linkTo;
@@ -195,6 +218,9 @@ export function mergeFindings(
                 aliases: [...(p.aliases ?? [])],
                 createdAt: now,
                 provenance: points,
+                ...(mentalFramings ? { mentalFramings } : {}),
+                ...(misconceptions ? { misconceptions } : {}),
+                ...(fragilityNotes ? { fragilityNotes } : {}),
             });
         } else {
             const node: GraphNode = {
@@ -204,6 +230,9 @@ export function mergeFindings(
                 aliases: [...(p.aliases ?? [])],
                 createdAt: now,
                 provenance: points,
+                ...(mentalFramings ? { mentalFramings } : {}),
+                ...(misconceptions ? { misconceptions } : {}),
+                ...(fragilityNotes ? { fragilityNotes } : {}),
             };
             ledgers.appendNode(node);
             stats.nodes++;
@@ -338,7 +367,17 @@ export function getGraph(graphStore: Pick<GraphStore, "readNodes" | "readChains"
     for (const line of graphStore.readNodes()) {
         const existing = byId.get(line.id);
         if (!existing) {
-            byId.set(line.id, { ...line, aliases: [...line.aliases], provenance: [...line.provenance] });
+            const mentalFramings = nonEmptyUnique(line.mentalFramings);
+            const misconceptions = nonEmptyUnique(line.misconceptions);
+            const fragilityNotes = nonEmptyUnique(line.fragilityNotes);
+            byId.set(line.id, {
+                ...line,
+                aliases: [...line.aliases],
+                provenance: [...line.provenance],
+                ...(mentalFramings ? { mentalFramings } : {}),
+                ...(misconceptions ? { misconceptions } : {}),
+                ...(fragilityNotes ? { fragilityNotes } : {}),
+            });
             continue;
         }
         for (const phrasing of [line.statement, ...line.aliases]) {
@@ -347,6 +386,12 @@ export function getGraph(graphStore: Pick<GraphStore, "readNodes" | "readChains"
         for (const pt of line.provenance) {
             if (!existing.provenance.some((q) => samePoint(q, pt))) existing.provenance.push(pt);
         }
+        const mergedFramings = mergeStringLists(existing.mentalFramings, line.mentalFramings);
+        if (mergedFramings) existing.mentalFramings = mergedFramings;
+        const mergedMisconceptions = mergeStringLists(existing.misconceptions, line.misconceptions);
+        if (mergedMisconceptions) existing.misconceptions = mergedMisconceptions;
+        const mergedFragility = mergeStringLists(existing.fragilityNotes, line.fragilityNotes);
+        if (mergedFragility) existing.fragilityNotes = mergedFragility;
     }
 
     const chains: GraphChain[] = [];
@@ -542,4 +587,122 @@ export function graphSessionPropositions(deps: GraphDeps, sessionId: string): Gr
     return born
         .map((node) => ({ nodeId: node.id, name: node.name, statement: node.statement }))
         .sort((a, b) => (a.nodeId < b.nodeId ? -1 : 1));
+}
+
+export interface TopicMindsetNodeMatch {
+    nodeId: string;
+    name: string;
+    statement: string;
+    mentalFramings: string[];
+    misconceptions: string[];
+    fragilityNotes: string[];
+}
+
+export interface TopicThinkingTrace {
+    chatId: string;
+    chatTitle: string;
+    thinking: string;
+}
+
+export interface TopicMindsetResult {
+    nodes: TopicMindsetNodeMatch[];
+    thinkingTraces: TopicThinkingTrace[];
+}
+
+/**
+ * Retrieve topic-scoped cognitive annotations (mental framings, misconceptions,
+ * fragility notes) from the Knowledge Graph plus matching raw learner thinking
+ * traces from past sessions touching those concepts.
+ */
+export function searchTopicMindset(
+    deps: GraphDeps,
+    query: string,
+    limit = 12,
+): TopicMindsetResult {
+    const terms = query
+        .toLowerCase()
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2);
+    if (terms.length === 0) return { nodes: [], thinkingTraces: [] };
+
+    const allNodes = getGraph(deps.graphStore).nodes;
+    const scored: Array<{ node: GraphNode; score: number }> = [];
+
+    for (const node of allNodes) {
+        const haystack = [
+            node.name,
+            node.statement,
+            ...node.aliases,
+            ...(node.mentalFramings ?? []),
+            ...(node.misconceptions ?? []),
+            ...(node.fragilityNotes ?? []),
+        ]
+            .join(" ")
+            .toLowerCase();
+
+        let score = 0;
+        for (const term of terms) {
+            if (haystack.includes(term)) score++;
+        }
+        if (score > 0) {
+            // Prioritize nodes that carry cognitive annotations
+            const hasAnnotations =
+                (node.mentalFramings?.length ?? 0) +
+                (node.misconceptions?.length ?? 0) +
+                (node.fragilityNotes?.length ?? 0);
+            scored.push({ node, score: score * 10 + Math.min(hasAnnotations, 5) });
+        }
+    }
+
+    scored.sort((a, b) => b.score - a.score || (a.node.id < b.node.id ? -1 : 1));
+    const topNodes = scored.slice(0, limit).map((s) => s.node);
+
+    const relatedChatIds = new Set<string>();
+    for (const n of topNodes) {
+        for (const pt of n.provenance) {
+            if (!pt.chatId.startsWith("src_")) relatedChatIds.add(pt.chatId);
+        }
+    }
+
+    const thinkingTraces: TopicThinkingTrace[] = [];
+    for (const chatId of relatedChatIds) {
+        if (thinkingTraces.length >= 10) break;
+        const chat = deps.chatStore.getChat(chatId);
+        if (!chat) continue;
+        for (const msg of chat.messages) {
+            if (thinkingTraces.length >= 10) break;
+            if (msg.role === "toolResult" && msg.details && typeof msg.details === "object") {
+                const thinking = (msg.details as Record<string, unknown>).thinking;
+                if (typeof thinking === "string" && thinking.trim().length > 0) {
+                    thinkingTraces.push({
+                        chatId: chat.id,
+                        chatTitle: chat.title,
+                        thinking: thinking.trim().slice(0, 400),
+                    });
+                }
+            } else if (msg.role === "custom" && msg.customType === "practice-thinking") {
+                const text = (msg.details as Record<string, unknown> | undefined)?.text;
+                if (typeof text === "string" && text.trim().length > 0) {
+                    thinkingTraces.push({
+                        chatId: chat.id,
+                        chatTitle: chat.title,
+                        thinking: text.trim().slice(0, 400),
+                    });
+                }
+            }
+        }
+    }
+
+    return {
+        nodes: topNodes.map((n) => ({
+            nodeId: n.id,
+            name: n.name,
+            statement: n.statement,
+            mentalFramings: n.mentalFramings ?? [],
+            misconceptions: n.misconceptions ?? [],
+            fragilityNotes: n.fragilityNotes ?? [],
+        })),
+        thinkingTraces,
+    };
 }

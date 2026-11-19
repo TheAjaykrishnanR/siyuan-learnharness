@@ -16,7 +16,16 @@ import type {
     SessionCheckpoint,
 } from "./contracts";
 
-export type ProviderId = "deepseek" | "gemini" | "custom";
+export type ProviderId = string;
+
+export interface CustomProviderConfig {
+    id: string;
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    cachedModels?: string[];
+}
 
 export interface PluginSettings {
     /** Active LLM provider for Prober / Teacher / Practice */
@@ -33,6 +42,8 @@ export interface PluginSettings {
     customApiKey: string;
     customModel: string;
     customBaseUrl: string;
+    /** Arbitrary user-added OpenAI-compatible custom providers */
+    customProviders?: CustomProviderConfig[];
     useSiyuanAiFallback: boolean;
     /** Cached available models fetched from API keys */
     cachedDeepseekModels?: string[];
@@ -61,6 +72,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
     customApiKey: "",
     customModel: "gpt-4o",
     customBaseUrl: "https://api.openai.com/v1",
+    customProviders: [],
     useSiyuanAiFallback: true,
     cachedDeepseekModels: ["deepseek-chat", "deepseek-reasoner"],
     cachedGeminiModels: [
