@@ -11,11 +11,13 @@ import {
     Brain,
     createElement,
     Image,
+    Mic,
     Send,
     ShieldCheck,
     Square,
 } from "lucide";
-import { Protyle, type App } from "siyuan";
+import { Protyle, showMessage, type App } from "siyuan";
+import { localStt } from "./local-stt";
 import { escapeHtml } from "./markdown";
 
 export interface ComposerPillsState {
@@ -37,6 +39,7 @@ export interface SiYuanBlockInputOptions {
     placeholder?: string;
     getPillsState?: () => ComposerPillsState;
     getModelGroups?: () => ModelPickerGroup[];
+    getSttModelId?: () => string;
     onSelectModel?: (providerId: string, modelId: string) => void;
     onOpenSettings?: () => void;
     onToggleMode?: () => void;
@@ -95,6 +98,13 @@ const BRAIN_ICON_SVG = createElement(Brain, {
     style: "fill: none !important; stroke: currentColor !important;",
 }).outerHTML;
 
+const MIC_ICON_SVG = createElement(Mic, {
+    width: 15,
+    height: 15,
+    "stroke-width": 1.75,
+    style: "fill: none !important; stroke: currentColor !important;",
+}).outerHTML;
+
 export class SiYuanBlockInput {
     private container: HTMLElement;
     private opts: SiYuanBlockInputOptions;
@@ -107,6 +117,10 @@ export class SiYuanBlockInput {
     private modelPillTextEl!: HTMLElement;
     private mechanicPillTextEl!: HTMLElement;
     private modelMenuEl!: HTMLElement;
+    private micBtnEl!: HTMLButtonElement;
+    private voiceBarEl!: HTMLElement;
+    private voiceCanvasEl!: HTMLCanvasElement;
+    private voiceStatusEl!: HTMLElement;
     private actionBtnEl!: HTMLButtonElement;
     private boundDocClick: ((e: MouseEvent) => void) | null = null;
 
@@ -161,10 +175,17 @@ export class SiYuanBlockInput {
             <div class="lh-composer-card__editor" data-placeholder="${escapeHtml(
                 this.opts.placeholder ?? "Write a note or question... (/ for blocks, (( to reference notes)",
             )}"></div>
+            <div class="lh-voice-bar fn__none">
+                <canvas class="lh-voice-waveform"></canvas>
+                <span class="lh-voice-status">Listening...</span>
+            </div>
             <div class="lh-composer-card__footer">
                 <div class="lh-composer-card__left">
                     <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-note" title="Insert active SiYuan note into textbox">
                         ${NOTE_LINK_SVG}
+                    </button>
+                    <button class="lh-composer-icon-btn lh-mic-btn" type="button" data-composer-action="toggle-mic" title="Voice input (local WASM)">
+                        ${MIC_ICON_SVG}
                     </button>
                     <button class="lh-composer-pill" type="button" data-composer-action="toggle-mode" title="Click to switch between Teaching and Practice mode">
                         ${SHIELD_ICON_SVG}
@@ -193,6 +214,10 @@ export class SiYuanBlockInput {
         this.container.appendChild(this.modelMenuEl);
         this.container.appendChild(this.cardEl);
         this.protyleHostEl = this.cardEl.querySelector(".lh-composer-card__editor") as HTMLElement;
+        this.micBtnEl = this.cardEl.querySelector(".lh-mic-btn") as HTMLButtonElement;
+        this.voiceBarEl = this.cardEl.querySelector(".lh-voice-bar") as HTMLElement;
+        this.voiceCanvasEl = this.cardEl.querySelector(".lh-voice-waveform") as HTMLCanvasElement;
+        this.voiceStatusEl = this.cardEl.querySelector(".lh-voice-status") as HTMLElement;
         this.modePillTextEl = this.cardEl.querySelector(".lh-pill-mode-text") as HTMLElement;
         this.modelPillTextEl = this.cardEl.querySelector(".lh-pill-model-text") as HTMLElement;
         this.mechanicPillTextEl = this.cardEl.querySelector(".lh-pill-mechanic-text") as HTMLElement;
@@ -464,6 +489,69 @@ export class SiYuanBlockInput {
         this.focus();
     }
 
+    /** Append dictated plain text into the Protyle editor. */
+    public insertPlainText(text: string): void {
+        const clean = text.trim();
+        if (!clean) return;
+        const wysiwygEl = this.getWysiwygElement();
+        if (!wysiwygEl) return;
+
+        const editables = wysiwygEl.querySelectorAll('[contenteditable="true"]');
+        let targetEditable = (editables.length > 0 ? editables[editables.length - 1] : null) as HTMLElement | null;
+        if (!targetEditable) {
+            wysiwygEl.innerHTML = this.createEmptyParagraphHtml();
+            targetEditable = wysiwygEl.querySelector('[contenteditable="true"]') as HTMLElement | null;
+        }
+        if (targetEditable) {
+            const existing = (targetEditable.textContent ?? "").replace(/\u200B/g, "");
+            const prefix = existing.length > 0 && !/\s$/.test(existing) ? " " : "";
+            targetEditable.appendChild(document.createTextNode(`${prefix}${clean}`));
+        }
+        this.syncEmptyState();
+        this.protyleHostEl.scrollTop = this.protyleHostEl.scrollHeight;
+    }
+
+    private async handleMicClick(): Promise<void> {
+        if (this.micBtnEl.classList.contains("lh-mic-btn--busy")) return;
+        if (localStt.isRecording()) {
+            this.micBtnEl.classList.remove("lh-mic-btn--recording");
+            this.micBtnEl.classList.add("lh-mic-btn--busy");
+            this.voiceStatusEl.textContent = "Finishing...";
+            try {
+                await localStt.stopLiveSession();
+            } catch (err: any) {
+                showMessage(`Voice error: ${err?.message ?? String(err)}`, 4000, "error");
+            } finally {
+                this.micBtnEl.classList.remove("lh-mic-btn--busy");
+                this.micBtnEl.title = "Voice input (local)";
+                this.voiceBarEl.classList.add("fn__none");
+            }
+        } else {
+            try {
+                this.voiceBarEl.classList.remove("fn__none");
+                this.voiceStatusEl.textContent = "Listening...";
+                await localStt.startLiveSession({
+                    modelId: this.opts.getSttModelId?.(),
+                    canvas: this.voiceCanvasEl,
+                    onTranscript: (text) => {
+                        this.insertPlainText(text);
+                    },
+                    onStatus: (st) => {
+                        if (st.message) this.voiceStatusEl.textContent = st.message;
+                    },
+                    onError: (err) => {
+                        showMessage(`Voice error: ${err.message}`, 4000, "error");
+                    },
+                });
+                this.micBtnEl.classList.add("lh-mic-btn--recording");
+                this.micBtnEl.title = "Stop recording";
+            } catch (err: any) {
+                this.voiceBarEl.classList.add("fn__none");
+                showMessage(`Microphone error: ${err?.message ?? String(err)}`, 4000, "error");
+            }
+        }
+    }
+
     private syncEmptyState(): void {
         const wysiwygEl = this.getWysiwygElement();
         if (!wysiwygEl) return;
@@ -578,6 +666,9 @@ export class SiYuanBlockInput {
             if (act === "attach-note") {
                 this.closeModelMenu();
                 this.opts.onAttachActiveNote?.();
+            } else if (act === "toggle-mic") {
+                this.closeModelMenu();
+                void this.handleMicClick();
             } else if (act === "toggle-mode") {
                 this.closeModelMenu();
                 this.opts.onToggleMode?.();

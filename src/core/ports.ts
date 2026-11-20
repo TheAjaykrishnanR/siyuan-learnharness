@@ -59,6 +59,8 @@ export interface PluginSettings {
     extractionChunkTokens: number;
     /** Auto-extract teacher prose in background */
     autoExtractGraph: boolean;
+    /** Local WASM speech-to-text model ID */
+    sttModel?: string;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -89,6 +91,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
     graphToolsEnabled: true,
     extractionChunkTokens: 2048,
     autoExtractGraph: true,
+    sttModel: "onnx-community/moonshine-tiny-ONNX",
 };
 
 export interface ChatStore {

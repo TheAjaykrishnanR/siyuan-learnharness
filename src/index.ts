@@ -209,6 +209,7 @@ export default class LearnHarnessPlugin extends Plugin {
         let quizzingMechanic = initial.quizzingMechanic || "quiz";
         let proactiveSiyuanNoteSearch = initial.proactiveSiyuanNoteSearch;
         let autoExtractGraph = initial.autoExtractGraph;
+        let sttModel = initial.sttModel || "onnx-community/moonshine-tiny-ONNX";
 
         const fetchStatus: Record<string, { text: string; type: "loading" | "success" | "error" | "" }> = {
             deepseek: { text: "", type: "" },
@@ -547,6 +548,19 @@ export default class LearnHarnessPlugin extends Plugin {
                                 autoExtractGraph ? "checked" : ""
                             } />
                         </div>
+
+                        <div class="lh-pref-row">
+                            <div class="lh-pref-row__info">
+                                <div class="lh-pref-row__title">Local Voice Model (WASM)</div>
+                                <div class="lh-pref-row__desc">Offline speech-to-text model for voicing thinking traces (downloads once on first mic click).</div>
+                            </div>
+                            <select class="b3-select fn__size160" id="lh-pref-stt">
+                                <option value="onnx-community/moonshine-tiny-ONNX" ${sttModel === "onnx-community/moonshine-tiny-ONNX" ? "selected" : ""}>Moonshine Tiny (Fast)</option>
+                                <option value="onnx-community/moonshine-base-ONNX" ${sttModel === "onnx-community/moonshine-base-ONNX" ? "selected" : ""}>Moonshine Base (Balanced)</option>
+                                <option value="onnx-community/whisper-tiny.en" ${sttModel === "onnx-community/whisper-tiny.en" ? "selected" : ""}>Whisper Tiny.en</option>
+                                <option value="onnx-community/whisper-base.en" ${sttModel === "onnx-community/whisper-base.en" ? "selected" : ""}>Whisper Base.en (Accurate)</option>
+                            </select>
+                        </div>
                     </div>
                 `
                 }
@@ -611,6 +625,8 @@ export default class LearnHarnessPlugin extends Plugin {
             if (pro) proactiveSiyuanNoteSearch = pro.checked;
             const ext = container.querySelector("#lh-pref-extract") as HTMLInputElement | null;
             if (ext) autoExtractGraph = ext.checked;
+            const sttSel = container.querySelector("#lh-pref-stt") as HTMLSelectElement | null;
+            if (sttSel) sttModel = sttSel.value;
         };
 
         const handleFetchModels = async (provider: ProviderId) => {
@@ -788,6 +804,7 @@ export default class LearnHarnessPlugin extends Plugin {
                     quizzingMechanic,
                     proactiveSiyuanNoteSearch,
                     autoExtractGraph,
+                    sttModel,
                 });
                 showMessage("LearnHarness settings saved", 2500, "info");
             },

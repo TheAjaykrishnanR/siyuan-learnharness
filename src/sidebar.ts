@@ -34,6 +34,7 @@ import type { ProviderId } from "./core/ports";
 import { getBlockById, readNoteMarkdown } from "./siyuan/client";
 import type { SiYuanHarnessStores } from "./store/siyuan-store";
 import { KnowledgeGraphView } from "./ui/graph-view";
+import { localStt } from "./ui/local-stt";
 import { escapeHtml, renderMarkdown } from "./ui/markdown";
 import { SiYuanBlockInput, type ModelPickerGroup } from "./ui/siyuan-block-input";
 
@@ -267,6 +268,7 @@ export class SidebarView {
         this.blockInput = new SiYuanBlockInput(this.blockInputContainerEl, {
             app: this.callbacks.app,
             placeholder: "Write a message, press / for blocks, (( to reference notes...",
+            getSttModelId: () => this.stores.settingsStore.get().sttModel || "onnx-community/moonshine-tiny-ONNX",
             getPillsState: () => {
                 const chat = this.getActiveChat();
                 const s = this.stores.settingsStore.get();
@@ -948,7 +950,14 @@ export class SidebarView {
                     }
 
                     <div class="lh-q-thinking-wrap">
-                        <label class="lh-q-thinking-label">Thinking (optional — share your reasoning, hunches, or confusion)</label>
+                        <div class="lh-q-thinking-label-row">
+                            <label class="lh-q-thinking-label">Thinking (optional — share your reasoning, hunches, or confusion)</label>
+                            <button type="button" class="lh-q-mic-btn" data-action="toggle-thinking-mic" title="Voice your thinking (local)">🎙 Speak</button>
+                        </div>
+                        <div class="lh-voice-bar lh-voice-bar--question fn__none">
+                            <canvas class="lh-voice-waveform"></canvas>
+                            <span class="lh-voice-status">Listening...</span>
+                        </div>
                         <textarea class="b3-text-field fn__block lh-q-thinking" rows="2" placeholder="Think out loud... how are you approaching this?">${escapeHtml(
                             draft.thinking,
                         )}</textarea>
@@ -1243,6 +1252,59 @@ export class SidebarView {
                 if (this.questionDraft && !Number.isNaN(idx)) {
                     this.questionDraft.confidenceIndex = idx;
                     this.renderQuestionCard();
+                }
+            } else if (action === "toggle-thinking-mic") {
+                if (!this.questionDraft || target.classList.contains("lh-mic-btn--busy")) return;
+                const draft = this.questionDraft;
+                const voiceBar = this.questionSlotEl.querySelector(".lh-voice-bar--question") as HTMLElement | null;
+                const voiceCanvas = voiceBar?.querySelector(".lh-voice-waveform") as HTMLCanvasElement | null;
+                const voiceStatus = voiceBar?.querySelector(".lh-voice-status") as HTMLElement | null;
+
+                if (localStt.isRecording()) {
+                    target.classList.remove("lh-mic-btn--recording");
+                    target.classList.add("lh-mic-btn--busy");
+                    target.textContent = "Finishing...";
+                    if (voiceStatus) voiceStatus.textContent = "Finishing...";
+                    void (async () => {
+                        try {
+                            await localStt.stopLiveSession();
+                        } catch (err: any) {
+                            showMessage(`Voice error: ${err?.message ?? String(err)}`, 4000, "error");
+                        } finally {
+                            target.classList.remove("lh-mic-btn--busy");
+                            target.textContent = "🎙 Speak";
+                            voiceBar?.classList.add("fn__none");
+                        }
+                    })();
+                } else {
+                    voiceBar?.classList.remove("fn__none");
+                    if (voiceStatus) voiceStatus.textContent = "Listening...";
+                    const modelId = this.stores.settingsStore.get().sttModel || "onnx-community/moonshine-tiny-ONNX";
+                    void localStt
+                        .startLiveSession({
+                            modelId,
+                            canvas: voiceCanvas,
+                            onTranscript: (text) => {
+                                const sep = draft.thinking.trim().length > 0 ? " " : "";
+                                draft.thinking = `${draft.thinking.trimEnd()}${sep}${text}`;
+                                const ta = this.questionSlotEl.querySelector(".lh-q-thinking") as HTMLTextAreaElement | null;
+                                if (ta) ta.value = draft.thinking;
+                            },
+                            onStatus: (st) => {
+                                if (st.message && voiceStatus) voiceStatus.textContent = st.message;
+                            },
+                            onError: (err) => {
+                                showMessage(`Voice error: ${err.message}`, 4000, "error");
+                            },
+                        })
+                        .then(() => {
+                            target.classList.add("lh-mic-btn--recording");
+                            target.textContent = "⏹ Stop";
+                        })
+                        .catch((err: any) => {
+                            voiceBar?.classList.add("fn__none");
+                            showMessage(`Microphone error: ${err?.message ?? String(err)}`, 4000, "error");
+                        });
                 }
             } else if (action === "submit-question-answer") {
                 if (!this.activeChatId || !this.questionDraft) return;

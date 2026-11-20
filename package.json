@@ -31,6 +31,7 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
     "lucide": "^1.63.0"
   }
 }
