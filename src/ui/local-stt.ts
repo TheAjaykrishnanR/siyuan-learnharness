@@ -1,12 +1,11 @@
 /**
- * Local in-browser / in-Electron Speech-to-Text (`LocalSttService`).
+ * Local in-plugin WebAssembly Speech-to-Text powered by Oído (`lokutor-ai/oido`).
  *
- * - Captures raw PCM audio via WebAudio (`AudioContext` + `AnalyserNode` + `ScriptProcessorNode`)
- *   so we get both a live 60fps waveform AND continuous 16kHz mono Float32 chunks.
- * - Preloads the quantized `@huggingface/transformers` model in the background the moment
- *   recording starts.
- * - Detects natural speech pauses (~650ms) or 4.5s max segments and transcribes incrementally
- *   in a serialized queue so words appear as soon as they are spoken.
+ * - Runs Oído's 67 KB Conformer-CTC C engine compiled to WebAssembly (`oido.wasm`).
+ * - Downloads `oido_v2.tlm` + `oido_v2a.tnm` / `oido_v2b.tnm` once and caches them
+ *   in the browser Cache API (`learnharness-oido-v1`) for 100% offline use thereafter.
+ * - Captures microphone audio via WebAudio (`AudioContext` + `AnalyserNode` + `ScriptProcessorNode`)
+ *   for both a live 60fps waveform AND true real-time word-by-word streaming transcription.
  */
 
 export type SttState = "idle" | "recording" | "loading-model" | "transcribing";
@@ -17,25 +16,64 @@ export interface SttStatusUpdate {
 }
 
 export interface SttSessionCallbacks {
+    /** "oido_v2a" (accurate, default) or "oido_v2b" (ultra-low latency) */
     modelId?: string;
     canvas?: HTMLCanvasElement | null;
-    onTranscript: (text: string) => void;
+    /** Called continuously with the cumulative decoded text of the current utterance as words are spoken */
+    onPartial: (text: string) => void;
+    /** Called once when stopped with the final refined text of the utterance */
+    onFinal?: (text: string) => void;
     onStatus?: (update: SttStatusUpdate) => void;
     onError?: (err: Error) => void;
 }
 
-const DEFAULT_STT_MODEL = "onnx-community/moonshine-tiny-ONNX";
-const TARGET_SAMPLE_RATE = 16000;
-const SILENCE_THRESHOLD = 0.012;
-const PAUSE_FLUSH_MS = 450;
-const MAX_SEGMENT_SECONDS = 3.0;
-const MIN_SEGMENT_SECONDS = 0.25;
+interface OidoWasmInstance {
+    HEAPU8: Uint8Array;
+    HEAP16: Int16Array;
+    UTF8ToString(ptr: number): string;
+    _oido_alloc(n: number): number;
+    _oido_free(ptr: number): void;
+    _oido_unload(): void;
+    _oido_load(modelPtr: number, mlen: number, lmPtr: number, llen: number, beam: number, topk: number): number;
+    _oido_reset(): void;
+    _oido_feed(pcmPtr: number, n: number): number;
+    _oido_partial(): number;
+    _oido_finish(): number;
+}
 
-function downsampleTo16k(input: Float32Array, inputRate: number): Float32Array {
-    if (inputRate === TARGET_SAMPLE_RATE) return input;
+interface OidoVariant {
+    file: string;
+    beam: number;
+    topk: number;
+    label: string;
+}
+
+const PLUGIN_NAME = "siyuan-learnharness";
+const WASM_REL_PATH = "oido/oido.wasm";
+const MODELS_REL_BASE = "oido/models/";
+const TARGET_SAMPLE_RATE = 16000;
+const FEED_CHUNK_SAMPLES = 3200; // 200ms at 16kHz for snappy real-time streaming
+
+const OIDO_VARIANTS: Record<string, OidoVariant> = {
+    oido_v2a: { file: "oido_v2a.tnm", beam: 4, topk: 6, label: "Oído v2a" },
+    oido_v2b: { file: "oido_v2b.tnm", beam: 2, topk: 3, label: "Oído v2b" },
+};
+
+function resolveVariantKey(modelId?: string): "oido_v2a" | "oido_v2b" {
+    return modelId === "oido_v2b" ? "oido_v2b" : "oido_v2a";
+}
+
+function downsampleFloatToInt16(input: Float32Array, inputRate: number): Int16Array {
+    if (inputRate === TARGET_SAMPLE_RATE) {
+        const out = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+            out[i] = Math.max(-32768, Math.min(32767, Math.round(input[i]! * 32768)));
+        }
+        return out;
+    }
     const ratio = inputRate / TARGET_SAMPLE_RATE;
     const outLength = Math.max(1, Math.floor(input.length / ratio));
-    const out = new Float32Array(outLength);
+    const out = new Int16Array(outLength);
     for (let i = 0; i < outLength; i++) {
         const start = Math.floor(i * ratio);
         const end = Math.min(input.length, Math.floor((i + 1) * ratio));
@@ -45,15 +83,23 @@ function downsampleTo16k(input: Float32Array, inputRate: number): Float32Array {
             sum += input[j]!;
             count++;
         }
-        out[i] = count > 0 ? sum / count : input[start] ?? 0;
+        const sample = count > 0 ? sum / count : input[start] ?? 0;
+        out[i] = Math.max(-32768, Math.min(32767, Math.round(sample * 32768)));
     }
     return out;
 }
 
-class LocalSttService {
-    private transcriber: ((audio: Float32Array) => Promise<{ text?: string } | Array<{ text?: string }>>) | null = null;
-    private loadedModelId: string | null = null;
+class LocalOidoSttService {
+    private mod: OidoWasmInstance | null = null;
+    private loadedVariant: string | null = null;
     private loadingPromise: Promise<void> | null = null;
+
+    private modelPtr = 0;
+    private lmPtr = 0;
+    private pcmPtr = 0;
+    private pcmCap = 0;
+    private lmBytesCache: ArrayBuffer | null = null;
+    private modelBytesCache = new Map<string, ArrayBuffer>();
 
     private recording = false;
     private mediaStream: MediaStream | null = null;
@@ -63,37 +109,32 @@ class LocalSttService {
     private sourceNode: MediaStreamAudioSourceNode | null = null;
     private rafId: number | null = null;
 
-    private pendingChunks: Float32Array[] = [];
-    private pendingSampleCount = 0;
-    private hasSpokenInSegment = false;
-    private lastSpeechTime = 0;
-
-    private queue: Promise<void> = Promise.resolve();
+    private pcmAccum: Int16Array[] = [];
+    private pcmAccumLen = 0;
+    private lastPartialText = "";
     private activeCallbacks: SttSessionCallbacks | null = null;
-    private activeModelId: string = DEFAULT_STT_MODEL;
 
     public isRecording(): boolean {
         return this.recording;
     }
 
-    /** Start live microphone capture, waveform rendering, and incremental transcription. */
+    /** Start live microphone capture, waveform rendering, and real-time Oído streaming transcription. */
     public async startLiveSession(callbacks: SttSessionCallbacks): Promise<void> {
         if (this.recording) return;
         if (!navigator.mediaDevices?.getUserMedia) {
             throw new Error("Microphone access is not available in this environment.");
         }
 
+        const variantKey = resolveVariantKey(callbacks.modelId);
         this.activeCallbacks = callbacks;
-        this.activeModelId = callbacks.modelId || DEFAULT_STT_MODEL;
-        this.pendingChunks = [];
-        this.pendingSampleCount = 0;
-        this.hasSpokenInSegment = false;
-        this.lastSpeechTime = performance.now();
+        this.pcmAccum = [];
+        this.pcmAccumLen = 0;
+        this.lastPartialText = "";
 
-        // Warm up / preload model immediately while user begins speaking
-        void this.ensureModelLoaded(this.activeModelId, callbacks.onStatus).catch((err) => {
-            callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
-        });
+        // Ensure Oído WASM engine & weights are loaded before resetting stream
+        await this.ensureLoaded(variantKey, callbacks.onStatus);
+        if (!this.mod) throw new Error("Oído WASM engine failed to initialize.");
+        this.mod._oido_reset();
 
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         this.mediaStream = stream;
@@ -118,53 +159,30 @@ class LocalSttService {
         processor.connect(audioCtx.destination);
 
         const inputRate = audioCtx.sampleRate;
-        const maxSamples = Math.floor(TARGET_SAMPLE_RATE * MAX_SEGMENT_SECONDS);
-        const minSamples = Math.floor(TARGET_SAMPLE_RATE * MIN_SEGMENT_SECONDS);
 
         processor.onaudioprocess = (ev) => {
-            if (!this.recording) return;
+            if (!this.recording || !this.mod) return;
             const raw = ev.inputBuffer.getChannelData(0);
-            let sumSq = 0;
-            for (let i = 0; i < raw.length; i++) {
-                const v = raw[i]!;
-                sumSq += v * v;
-            }
-            const rms = Math.sqrt(sumSq / raw.length);
-            const now = performance.now();
+            const pcm16 = downsampleFloatToInt16(raw, inputRate);
+            this.pcmAccum.push(pcm16);
+            this.pcmAccumLen += pcm16.length;
 
-            if (rms >= SILENCE_THRESHOLD) {
-                this.hasSpokenInSegment = true;
-                this.lastSpeechTime = now;
-            }
-
-            if (this.hasSpokenInSegment || rms >= SILENCE_THRESHOLD * 0.6) {
-                const down = downsampleTo16k(raw, inputRate);
-                this.pendingChunks.push(down);
-                this.pendingSampleCount += down.length;
-            }
-
-            const pausedLongEnough =
-                this.hasSpokenInSegment &&
-                now - this.lastSpeechTime >= PAUSE_FLUSH_MS &&
-                this.pendingSampleCount >= minSamples;
-            const hitMaxDuration = this.pendingSampleCount >= maxSamples;
-
-            if (pausedLongEnough || hitMaxDuration) {
-                this.flushPendingSegment();
+            if (this.pcmAccumLen >= FEED_CHUNK_SAMPLES) {
+                this.feedAccumulatedPcm();
             }
         };
 
         this.recording = true;
-        callbacks.onStatus?.({ state: "recording", message: "Listening..." });
+        callbacks.onStatus?.({ state: "recording", message: "Listening (Oído)..." });
 
         if (callbacks.canvas) {
             this.startWaveformLoop(callbacks.canvas);
         }
     }
 
-    /** Stop recording and flush any remaining spoken audio. */
-    public async stopLiveSession(): Promise<void> {
-        if (!this.recording) return;
+    /** Stop recording, flush any remaining PCM, and finalize the Oído transcript. */
+    public async stopLiveSession(): Promise<string> {
+        if (!this.recording) return this.lastPartialText;
         this.recording = false;
 
         if (this.rafId !== null) {
@@ -188,53 +206,187 @@ class LocalSttService {
         this.mediaStream = null;
         this.audioCtx = null;
 
-        if (this.pendingSampleCount >= Math.floor(TARGET_SAMPLE_RATE * 0.2)) {
-            this.flushPendingSegment();
-        } else {
-            this.pendingChunks = [];
-            this.pendingSampleCount = 0;
+        const cb = this.activeCallbacks;
+        let finalText = this.lastPartialText;
+
+        if (this.mod) {
+            if (this.pcmAccumLen > 0) {
+                this.feedAccumulatedPcm();
+            }
+            const rawFinal = this.mod.UTF8ToString(this.mod._oido_finish()).trim();
+            if (rawFinal) {
+                finalText = rawFinal;
+                this.lastPartialText = rawFinal;
+            }
         }
 
-        const cb = this.activeCallbacks;
-        await this.queue;
+        if (finalText) {
+            cb?.onFinal?.(finalText);
+        }
         cb?.onStatus?.({ state: "idle" });
         this.activeCallbacks = null;
+        return finalText;
     }
 
-    private flushPendingSegment(): void {
-        if (this.pendingSampleCount === 0) return;
-        const merged = new Float32Array(this.pendingSampleCount);
+    private feedAccumulatedPcm(): void {
+        if (!this.mod || this.pcmAccumLen === 0) return;
+        const merged = new Int16Array(this.pcmAccumLen);
         let offset = 0;
-        for (const chunk of this.pendingChunks) {
+        for (const chunk of this.pcmAccum) {
             merged.set(chunk, offset);
             offset += chunk.length;
         }
-        this.pendingChunks = [];
-        this.pendingSampleCount = 0;
-        this.hasSpokenInSegment = false;
+        this.pcmAccum = [];
+        this.pcmAccumLen = 0;
 
-        const cb = this.activeCallbacks;
-        const modelId = this.activeModelId;
+        const ptr = this.ensurePcmBuffer(merged.length);
+        this.mod.HEAP16.set(merged, ptr >> 1);
+        this.mod._oido_feed(ptr, merged.length);
 
-        this.queue = this.queue.then(async () => {
-            try {
-                await this.ensureModelLoaded(modelId, cb?.onStatus);
-                if (!this.transcriber) return;
-                cb?.onStatus?.({ state: "transcribing", message: "Processing speech..." });
-                const output = await this.transcriber(merged);
-                const text = Array.isArray(output)
-                    ? output.map((o) => o?.text ?? "").join(" ").trim()
-                    : (output?.text ?? "").trim();
-                if (text) {
-                    cb?.onTranscript(text);
+        const partial = this.mod.UTF8ToString(this.mod._oido_partial()).trim();
+        if (partial && partial !== this.lastPartialText) {
+            this.lastPartialText = partial;
+            this.activeCallbacks?.onPartial(partial);
+        }
+    }
+
+    private ensurePcmBuffer(samples: number): number {
+        const m = this.mod!;
+        if (samples > this.pcmCap) {
+            if (this.pcmPtr) m._oido_free(this.pcmPtr);
+            this.pcmCap = Math.max(samples, 16000);
+            this.pcmPtr = m._oido_alloc(this.pcmCap * 2);
+        }
+        return this.pcmPtr;
+    }
+
+    private allocAndCopy(bytes: ArrayBuffer): number {
+        const m = this.mod!;
+        const p = m._oido_alloc(bytes.byteLength);
+        m.HEAPU8.set(new Uint8Array(bytes), p);
+        return p;
+    }
+
+    private async ensureLoaded(
+        variantKey: "oido_v2a" | "oido_v2b",
+        onStatus?: (update: SttStatusUpdate) => void,
+    ): Promise<void> {
+        if (this.mod && this.loadedVariant === variantKey) return;
+        if (this.loadingPromise && this.loadedVariant === variantKey) {
+            await this.loadingPromise;
+            return;
+        }
+
+        const variant = OIDO_VARIANTS[variantKey]!;
+        this.loadedVariant = variantKey;
+
+        this.loadingPromise = (async () => {
+            if (!this.mod) {
+                onStatus?.({ state: "loading-model", message: "Loading Oído WASM..." });
+                const wasmBinary = await this.fetchLocalAsset(WASM_REL_PATH, "Oído WASM engine");
+                const magic = new Uint8Array(wasmBinary, 0, Math.min(4, wasmBinary.byteLength));
+                if (
+                    magic.length < 4 ||
+                    magic[0] !== 0x00 ||
+                    magic[1] !== 0x61 ||
+                    magic[2] !== 0x73 ||
+                    magic[3] !== 0x6d
+                ) {
+                    throw new Error(`Invalid oido.wasm binary (${wasmBinary.byteLength} bytes).`);
                 }
-                if (this.recording) {
-                    cb?.onStatus?.({ state: "recording", message: "Listening..." });
-                }
-            } catch (err) {
-                cb?.onError?.(err instanceof Error ? err : new Error(String(err)));
+                // eslint-disable-next-line @typescript-eslint/no-require-imports
+                const OidoModuleFactory = require("../assets/oido/oido.js") as (
+                    arg?: Record<string, unknown>,
+                ) => Promise<OidoWasmInstance>;
+                this.mod = await OidoModuleFactory({
+                    instantiateWasm: (
+                        imports: WebAssembly.Imports,
+                        receive: (instance: WebAssembly.Instance) => void,
+                    ) => {
+                        void WebAssembly.instantiate(wasmBinary, imports).then((res) => {
+                            receive(res.instance);
+                        });
+                        return {};
+                    },
+                });
             }
-        });
+
+            if (!this.lmBytesCache) {
+                onStatus?.({ state: "loading-model", message: "Loading Oído language model..." });
+                this.lmBytesCache = await this.fetchLocalAsset(
+                    `${MODELS_REL_BASE}oido_v2.tlm`,
+                    "Oído language model",
+                );
+            }
+            let modelBytes = this.modelBytesCache.get(variantKey);
+            if (!modelBytes) {
+                onStatus?.({ state: "loading-model", message: `Loading ${variant.label}...` });
+                modelBytes = await this.fetchLocalAsset(
+                    `${MODELS_REL_BASE}${variant.file}`,
+                    variant.label,
+                );
+                this.modelBytesCache.set(variantKey, modelBytes);
+            }
+
+            onStatus?.({ state: "loading-model", message: `Initializing ${variant.label}...` });
+            this.mod._oido_unload();
+            if (this.modelPtr) this.mod._oido_free(this.modelPtr);
+            if (this.lmPtr) this.mod._oido_free(this.lmPtr);
+
+            this.modelPtr = this.allocAndCopy(modelBytes);
+            this.lmPtr = this.allocAndCopy(this.lmBytesCache);
+
+            const rc = this.mod._oido_load(
+                this.modelPtr,
+                modelBytes.byteLength,
+                this.lmPtr,
+                this.lmBytesCache.byteLength,
+                variant.beam,
+                variant.topk,
+            );
+            if (rc !== 0) {
+                throw new Error(`Oído model load failed (rc=${rc}).`);
+            }
+        })();
+
+        try {
+            await this.loadingPromise;
+        } catch (err) {
+            this.loadedVariant = null;
+            throw err;
+        } finally {
+            this.loadingPromise = null;
+        }
+    }
+
+    private async fetchLocalAsset(relPath: string, label: string): Promise<ArrayBuffer> {
+        const workspacePath = `/data/plugins/${PLUGIN_NAME}/${relPath}`;
+        try {
+            const apiRes = await fetch("/api/file/getFile", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: workspacePath }),
+            });
+            if (apiRes.ok) {
+                const contentType = apiRes.headers.get("content-type") || "";
+                const buf = await apiRes.arrayBuffer();
+                if (buf.byteLength > 0 && !contentType.includes("application/json")) {
+                    return buf;
+                }
+            }
+        } catch {
+            // fall through to static plugin path
+        }
+
+        const staticRes = await fetch(`/plugins/${PLUGIN_NAME}/${relPath}`);
+        if (staticRes.ok) {
+            const buf = await staticRes.arrayBuffer();
+            if (buf.byteLength > 0) {
+                return buf;
+            }
+        }
+
+        throw new Error(`Could not load bundled ${label} (${workspacePath}).`);
     }
 
     private startWaveformLoop(canvas: HTMLCanvasElement): void {
@@ -280,54 +432,6 @@ class LocalSttService {
 
         this.rafId = requestAnimationFrame(draw);
     }
-
-    private async ensureModelLoaded(
-        modelId: string,
-        onStatus?: (update: SttStatusUpdate) => void,
-    ): Promise<void> {
-        if (this.transcriber && this.loadedModelId === modelId) return;
-        if (this.loadingPromise && this.loadedModelId === modelId) {
-            await this.loadingPromise;
-            return;
-        }
-
-        this.loadedModelId = modelId;
-        this.transcriber = null;
-        this.loadingPromise = (async () => {
-            onStatus?.({ state: "loading-model", message: `Loading ${modelId.split("/").pop()}...` });
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const { env, pipeline } = require("@huggingface/transformers") as typeof import("@huggingface/transformers");
-
-            env.allowLocalModels = false;
-            env.useBrowserCache = true;
-            if (env.backends?.onnx?.wasm) {
-                env.backends.onnx.wasm.numThreads = 1;
-                env.backends.onnx.wasm.wasmPaths = "/plugins/siyuan-learnharness/ort/";
-            }
-
-            const pipe = await pipeline("automatic-speech-recognition", modelId, {
-                device: "wasm",
-                dtype: "q8",
-                progress_callback: (prog: any) => {
-                    if (prog?.status === "progress" && typeof prog.progress === "number") {
-                        onStatus?.({
-                            state: "loading-model",
-                            message: `Downloading voice model (${Math.round(prog.progress)}%)...`,
-                        });
-                    }
-                },
-            });
-            this.transcriber = pipe as unknown as (
-                audio: Float32Array,
-            ) => Promise<{ text?: string } | Array<{ text?: string }>>;
-        })();
-
-        try {
-            await this.loadingPromise;
-        } finally {
-            this.loadingPromise = null;
-        }
-    }
 }
 
-export const localStt = new LocalSttService();
+export const localStt = new LocalOidoSttService();

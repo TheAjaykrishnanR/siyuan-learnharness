@@ -91,7 +91,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
     graphToolsEnabled: true,
     extractionChunkTokens: 2048,
     autoExtractGraph: true,
-    sttModel: "onnx-community/moonshine-tiny-ONNX",
+    sttModel: "oido_v2a",
 };
 
 export interface ChatStore {

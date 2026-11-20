@@ -268,7 +268,7 @@ export class SidebarView {
         this.blockInput = new SiYuanBlockInput(this.blockInputContainerEl, {
             app: this.callbacks.app,
             placeholder: "Write a message, press / for blocks, (( to reference notes...",
-            getSttModelId: () => this.stores.settingsStore.get().sttModel || "onnx-community/moonshine-tiny-ONNX",
+            getSttModelId: () => this.stores.settingsStore.get().sttModel || "oido_v2a",
             getPillsState: () => {
                 const chat = this.getActiveChat();
                 const s = this.stores.settingsStore.get();
@@ -1278,18 +1278,25 @@ export class SidebarView {
                     })();
                 } else {
                     voiceBar?.classList.remove("fn__none");
-                    if (voiceStatus) voiceStatus.textContent = "Listening...";
-                    const modelId = this.stores.settingsStore.get().sttModel || "onnx-community/moonshine-tiny-ONNX";
+                    if (voiceStatus) voiceStatus.textContent = "Loading Oído...";
+                    const modelId = this.stores.settingsStore.get().sttModel || "oido_v2a";
+                    const baseThinking = draft.thinking.trimEnd();
+                    const applyLive = (text: string) => {
+                        const clean = text.trim();
+                        if (!clean) return;
+                        draft.thinking = baseThinking ? `${baseThinking} ${clean}` : clean;
+                        const ta = this.questionSlotEl.querySelector(".lh-q-thinking") as HTMLTextAreaElement | null;
+                        if (ta) {
+                            ta.value = draft.thinking;
+                            ta.scrollTop = ta.scrollHeight;
+                        }
+                    };
                     void localStt
                         .startLiveSession({
                             modelId,
                             canvas: voiceCanvas,
-                            onTranscript: (text) => {
-                                const sep = draft.thinking.trim().length > 0 ? " " : "";
-                                draft.thinking = `${draft.thinking.trimEnd()}${sep}${text}`;
-                                const ta = this.questionSlotEl.querySelector(".lh-q-thinking") as HTMLTextAreaElement | null;
-                                if (ta) ta.value = draft.thinking;
-                            },
+                            onPartial: applyLive,
+                            onFinal: applyLive,
                             onStatus: (st) => {
                                 if (st.message && voiceStatus) voiceStatus.textContent = st.message;
                             },

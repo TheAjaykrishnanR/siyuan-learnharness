@@ -20,6 +20,9 @@ module.exports = (env, argv) => {
         new MiniCssExtractPlugin({
             filename: production ? "dist/index.css" : "index.css",
         }),
+        new webpack.IgnorePlugin({
+            resourceRegExp: /^node:/,
+        }),
     ];
 
     if (production) {
@@ -40,10 +43,8 @@ module.exports = (env, argv) => {
                     { from: "plugin.json", to: "./dist/" },
                     { from: "src/i18n/", to: "./dist/i18n/" },
                     { from: "src/i18n/", to: "./i18n/" },
-                    {
-                        from: "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.*",
-                        to: "./dist/ort/[name][ext]",
-                    },
+                    { from: "src/assets/oido/oido.wasm", to: "./dist/oido/oido.wasm" },
+                    { from: "src/assets/oido/models/", to: "./dist/oido/models/" },
                 ],
             }),
         );
@@ -52,10 +53,8 @@ module.exports = (env, argv) => {
             new CopyPlugin({
                 patterns: [
                     { from: "src/i18n/", to: "./i18n/" },
-                    {
-                        from: "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.*",
-                        to: "./ort/[name][ext]",
-                    },
+                    { from: "src/assets/oido/oido.wasm", to: "./oido/oido.wasm" },
+                    { from: "src/assets/oido/models/", to: "./oido/models/" },
                 ],
             }),
         );
@@ -90,10 +89,6 @@ module.exports = (env, argv) => {
         },
         module: {
             rules: [
-                {
-                    test: /@huggingface[\\/]transformers[\\/]dist[\\/]transformers\.web\.js$/,
-                    use: [path.resolve(__dirname, "webpack-transformers-web-loader.js")],
-                },
                 {
                     test: /\.ts(x?)$/,
                     include: [path.resolve(__dirname, "src")],

@@ -121,6 +121,8 @@ export class SiYuanBlockInput {
     private voiceBarEl!: HTMLElement;
     private voiceCanvasEl!: HTMLCanvasElement;
     private voiceStatusEl!: HTMLElement;
+    private liveVoiceTextNode: Text | null = null;
+    private liveVoicePrefix = "";
     private actionBtnEl!: HTMLButtonElement;
     private boundDocClick: ((e: MouseEvent) => void) | null = null;
 
@@ -511,6 +513,31 @@ export class SiYuanBlockInput {
         this.protyleHostEl.scrollTop = this.protyleHostEl.scrollHeight;
     }
 
+    private updateLiveVoiceText(text: string): void {
+        const clean = text.trim();
+        if (!clean) return;
+        const wysiwygEl = this.getWysiwygElement();
+        if (!wysiwygEl) return;
+
+        if (!this.liveVoiceTextNode || !wysiwygEl.contains(this.liveVoiceTextNode)) {
+            const editables = wysiwygEl.querySelectorAll('[contenteditable="true"]');
+            let targetEditable = (editables.length > 0 ? editables[editables.length - 1] : null) as HTMLElement | null;
+            if (!targetEditable) {
+                wysiwygEl.innerHTML = this.createEmptyParagraphHtml();
+                targetEditable = wysiwygEl.querySelector('[contenteditable="true"]') as HTMLElement | null;
+            }
+            if (!targetEditable) return;
+            const existing = (targetEditable.textContent ?? "").replace(/\u200B/g, "");
+            this.liveVoicePrefix = existing.length > 0 && !/\s$/.test(existing) ? " " : "";
+            this.liveVoiceTextNode = document.createTextNode(`${this.liveVoicePrefix}${clean}`);
+            targetEditable.appendChild(this.liveVoiceTextNode);
+        } else {
+            this.liveVoiceTextNode.data = `${this.liveVoicePrefix}${clean}`;
+        }
+        this.syncEmptyState();
+        this.protyleHostEl.scrollTop = this.protyleHostEl.scrollHeight;
+    }
+
     private async handleMicClick(): Promise<void> {
         if (this.micBtnEl.classList.contains("lh-mic-btn--busy")) return;
         if (localStt.isRecording()) {
@@ -522,19 +549,26 @@ export class SiYuanBlockInput {
             } catch (err: any) {
                 showMessage(`Voice error: ${err?.message ?? String(err)}`, 4000, "error");
             } finally {
+                this.liveVoiceTextNode = null;
+                this.liveVoicePrefix = "";
                 this.micBtnEl.classList.remove("lh-mic-btn--busy");
-                this.micBtnEl.title = "Voice input (local)";
+                this.micBtnEl.title = "Voice input (Oído WASM)";
                 this.voiceBarEl.classList.add("fn__none");
             }
         } else {
             try {
+                this.liveVoiceTextNode = null;
+                this.liveVoicePrefix = "";
                 this.voiceBarEl.classList.remove("fn__none");
-                this.voiceStatusEl.textContent = "Listening...";
+                this.voiceStatusEl.textContent = "Loading Oído...";
                 await localStt.startLiveSession({
                     modelId: this.opts.getSttModelId?.(),
                     canvas: this.voiceCanvasEl,
-                    onTranscript: (text) => {
-                        this.insertPlainText(text);
+                    onPartial: (text) => {
+                        this.updateLiveVoiceText(text);
+                    },
+                    onFinal: (text) => {
+                        this.updateLiveVoiceText(text);
                     },
                     onStatus: (st) => {
                         if (st.message) this.voiceStatusEl.textContent = st.message;
@@ -546,8 +580,9 @@ export class SiYuanBlockInput {
                 this.micBtnEl.classList.add("lh-mic-btn--recording");
                 this.micBtnEl.title = "Stop recording";
             } catch (err: any) {
+                this.liveVoiceTextNode = null;
                 this.voiceBarEl.classList.add("fn__none");
-                showMessage(`Microphone error: ${err?.message ?? String(err)}`, 4000, "error");
+                showMessage(`Voice error: ${err?.message ?? String(err)}`, 4000, "error");
             }
         }
     }
