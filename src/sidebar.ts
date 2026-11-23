@@ -31,7 +31,12 @@ import {
     type QuestionAnswerData,
 } from "./core/question-core";
 import type { ProviderId } from "./core/ports";
-import { getBlockById, readNoteMarkdown } from "./siyuan/client";
+import {
+    extractAssetImagePaths,
+    getBlockById,
+    readNoteMarkdown,
+    readSiyuanImages,
+} from "./siyuan/client";
 import type { SiYuanHarnessStores } from "./store/siyuan-store";
 import { KnowledgeGraphView } from "./ui/graph-view";
 import { localStt } from "./ui/local-stt";
@@ -646,15 +651,24 @@ export class SidebarView {
 
             if (m.role === "custom") {
                 if (m.customType === "siyuan-note-context") {
-                    const details = (m.details ?? {}) as { docId?: string; title?: string; hPath?: string };
+                    const details = (m.details ?? {}) as {
+                        docId?: string;
+                        title?: string;
+                        hPath?: string;
+                        images?: Array<{ path: string; dataUrl: string }>;
+                    };
                     if (details.docId) {
+                        const imgBadge =
+                            details.images && details.images.length > 0
+                                ? ` · 🖼 ${details.images.length}`
+                                : "";
                         blocksHtml.push(`
                             <div class="lh-inline-note">
                                 <span class="lh-block-ref" data-action="open-siyuan-doc" data-doc-id="${escapeHtml(
                                     details.docId,
                                 )}" data-block-ref-id="${escapeHtml(details.docId)}">📄 ${escapeHtml(
                             details.title || details.hPath || details.docId,
-                        )}</span>
+                        )}${imgBadge}</span>
                             </div>
                         `);
                     }
@@ -1058,16 +1072,19 @@ export class SidebarView {
     private async attachSiyuanContextForId(chat: ChatRecord, blockId: string, passive = false): Promise<boolean> {
         let title = blockId;
         let hPath = blockId;
+        let rawMarkdown = "";
         let fullExcerpt = "";
         try {
             const match = await getBlockById(blockId);
             if (match) {
                 title = (match.content || match.hPath || blockId).slice(0, 80);
                 hPath = match.hPath || blockId;
-                fullExcerpt = match.markdown || match.content || "";
+                rawMarkdown = match.markdown || match.content || "";
+                fullExcerpt = rawMarkdown;
             }
             const exported = await readNoteMarkdown(blockId);
             if (exported.content) {
+                rawMarkdown = exported.content;
                 fullExcerpt = exported.content.slice(0, 6000);
                 if (exported.hPath) hPath = exported.hPath;
             }
@@ -1096,6 +1113,7 @@ export class SidebarView {
     private async handleUserSubmit(payload: {
         displayMarkdown: string;
         referencedBlockIds: string[];
+        imagePaths?: string[];
     }): Promise<void> {
         const chat = this.getActiveChat();
         if (!chat) return;
@@ -1133,7 +1151,12 @@ export class SidebarView {
             return;
         }
 
-        await this.runner.sendUserMessage(chat.id, payload.displayMarkdown);
+        const userImagePaths = Array.from(
+            new Set([...(payload.imagePaths ?? []), ...extractAssetImagePaths(payload.displayMarkdown)]),
+        );
+        const userImages = userImagePaths.length > 0 ? await readSiyuanImages(userImagePaths, 12) : undefined;
+
+        await this.runner.sendUserMessage(chat.id, payload.displayMarkdown, userImages);
     }
 
     private bindEvents(): void {

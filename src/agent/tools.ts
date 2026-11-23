@@ -37,7 +37,14 @@ import {
     quizInputProblems,
 } from "../core/question-core";
 import { Type, validateSchema, type TSchema } from "../core/schema";
-import { findNotes, grepNotes, listDocsByPath, listNotebooks, readNoteMarkdown } from "../siyuan/client";
+import {
+    findNotes,
+    grepNotes,
+    listDocsByPath,
+    listNotebooks,
+    readNoteMarkdown,
+    readSiyuanImageDataUrl,
+} from "../siyuan/client";
 
 export interface AgentToolResult {
     text: string;
@@ -211,7 +218,7 @@ export function siyuanNoteTools(): Record<string, AgentToolDefinition> {
             parameters: grepNotesSchema,
             execute: async (_id, args) => {
                 try {
-                    const query = String(args.query ?? "").trim();
+                    const query = String(args.query ?? args.q ?? args.pattern ?? "").trim();
                     if (!query) return invalidInputResult("siyuan_grep_notes", ["query must not be empty"]);
                     const matches = await grepNotes(query, {
                         notebookId: typeof args.notebookId === "string" ? args.notebookId : undefined,
@@ -238,7 +245,7 @@ export function siyuanNoteTools(): Record<string, AgentToolDefinition> {
             parameters: readNoteSchema,
             execute: async (_id, args) => {
                 try {
-                    const id = String(args.id ?? "").trim();
+                    const id = String(args.id ?? args.docId ?? args.blockId ?? args.noteId ?? "").trim();
                     if (!id) return invalidInputResult("siyuan_read_note", ["id is required"]);
                     const exported = await readNoteMarkdown(id);
                     const allLines = exported.content.split(/\r?\n/);
@@ -258,6 +265,37 @@ export function siyuanNoteTools(): Record<string, AgentToolDefinition> {
                     };
                 } catch (err: any) {
                     return { text: `Error reading SiYuan note: ${err?.message ?? String(err)}`, isError: true };
+                }
+            },
+        },
+
+        siyuan_view_image: {
+            name: "siyuan_view_image",
+            description:
+                "Read-only tool to inspect a specific embedded image (e.g. 'assets/mark-20261123122824-2uoi03e.png') from a SiYuan note on demand. Only request the specific image(s) needed for the learner's question.",
+            parameters: Type.Object({
+                path: Type.String({
+                    minLength: 1,
+                    description: "The SiYuan asset image path from the note (e.g. 'assets/image-....png').",
+                }),
+            }),
+            execute: async (_id, args) => {
+                try {
+                    const rawPath = String(args.path ?? args.imagePath ?? args.src ?? "").trim();
+                    if (!rawPath) return invalidInputResult("siyuan_view_image", ["path is required"]);
+                    const dataUrl = await readSiyuanImageDataUrl(rawPath);
+                    if (!dataUrl) {
+                        return {
+                            text: `Could not load image at "${rawPath}" from SiYuan assets.`,
+                            isError: true,
+                        };
+                    }
+                    return {
+                        text: `Loaded image "${rawPath}". It is attached in the next user message for visual inspection.`,
+                        details: { image: { path: rawPath, dataUrl } },
+                    };
+                } catch (err: any) {
+                    return { text: `Error loading SiYuan image: ${err?.message ?? String(err)}`, isError: true };
                 }
             },
         },
@@ -304,7 +342,7 @@ export function proberGraphTools(deps: GraphDeps): Record<string, AgentToolDefin
                 "List the propositions born in a specific session from the learner's knowledge graph.",
             parameters: listPropositionsSchema,
             execute: async (_id, args) => {
-                const sessionId = String(args.sessionId ?? "").trim();
+                const sessionId = String(args.sessionId ?? args.session ?? args.id ?? "").trim();
                 const props = graphSessionPropositions(deps, sessionId);
                 if (props.length === 0) return { text: `(no propositions found for session ${sessionId})` };
                 const lines = props.map((p) => `[${p.nodeId}] ${p.name}: ${p.statement}`);

@@ -49,6 +49,7 @@ export interface SiYuanBlockInputOptions {
     onSubmit: (payload: {
         displayMarkdown: string;
         referencedBlockIds: string[];
+        imagePaths: string[];
     }) => void;
     onStop: () => void;
 }
@@ -373,13 +374,19 @@ export class SiYuanBlockInput {
         return (wysiwygEl.innerText ?? wysiwygEl.textContent ?? "").replace(/\u200B/g, "").trim();
     }
 
-    /** Extract clean Markdown + all referenced SiYuan block IDs from the Protyle WYSIWYG DOM. */
-    public extractContent(): { markdown: string; referencedBlockIds: string[] } {
+    /** Extract clean Markdown + all referenced SiYuan block IDs + pasted image paths from the Protyle WYSIWYG DOM. */
+    public extractContent(): { markdown: string; referencedBlockIds: string[]; imagePaths: string[] } {
         const wysiwygEl = this.getWysiwygElement();
-        if (!wysiwygEl) return { markdown: "", referencedBlockIds: [] };
+        if (!wysiwygEl) return { markdown: "", referencedBlockIds: [], imagePaths: [] };
 
         const refIds = new Set<string>();
+        const imgPaths = new Set<string>();
         const clone = wysiwygEl.cloneNode(true) as HTMLElement;
+
+        clone.querySelectorAll("img").forEach((img) => {
+            const raw = img.getAttribute("data-src") || img.getAttribute("src") || "";
+            if (raw.trim()) imgPaths.add(raw.trim());
+        });
 
         clone.querySelectorAll('[data-type="block-ref"]').forEach((el) => {
             const id = el.getAttribute("data-id") || "";
@@ -415,6 +422,7 @@ export class SiYuanBlockInput {
         return {
             markdown: md,
             referencedBlockIds: Array.from(refIds),
+            imagePaths: Array.from(imgPaths),
         };
     }
 
@@ -455,13 +463,14 @@ export class SiYuanBlockInput {
 
     public submit(): void {
         if (this.busy) return;
-        const { markdown, referencedBlockIds } = this.extractContent();
-        if (!markdown && referencedBlockIds.length === 0) return;
+        const { markdown, referencedBlockIds, imagePaths } = this.extractContent();
+        if (!markdown && referencedBlockIds.length === 0 && imagePaths.length === 0) return;
 
         this.clear();
         this.opts.onSubmit({
             displayMarkdown: markdown,
             referencedBlockIds,
+            imagePaths,
         });
     }
 
@@ -591,13 +600,14 @@ export class SiYuanBlockInput {
         const wysiwygEl = this.getWysiwygElement();
         if (!wysiwygEl) return;
         const hasBlockRef = Boolean(wysiwygEl.querySelector('[data-type="block-ref"]'));
+        const hasImage = Boolean(wysiwygEl.querySelector("img"));
         const hasNonParagraphBlock = Boolean(
             wysiwygEl.querySelector(
                 '[data-type="NodeCodeBlock"], [data-type="NodeMathBlock"], [data-type="NodeList"], [data-type="NodeBlockquote"], [data-type="NodeHeading"], [data-type="NodeTable"]',
             ),
         );
         const hasText = this.getPlainText().length > 0;
-        const isEmpty = !hasText && !hasBlockRef && !hasNonParagraphBlock;
+        const isEmpty = !hasText && !hasBlockRef && !hasImage && !hasNonParagraphBlock;
 
         if (isEmpty) {
             this.protyleHostEl.classList.add("lh-composer-card__editor--empty");

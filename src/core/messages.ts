@@ -12,6 +12,7 @@ import {
     type LhMessage,
     type LhToolResultMessage,
     type LhUserMessage,
+    type NoteImageAttachment,
     type Phase3,
 } from "./contracts";
 import { QUESTION_TOOLS, compactAnswerForModel, type QuestionAnswerData } from "./question-core";
@@ -27,11 +28,12 @@ export function newMessageId(): string {
     return `msg_${Date.now().toString(36)}_${randomHex(4)}`;
 }
 
-export function newUserMessage(text: string): LhUserMessage {
+export function newUserMessage(text: string, images?: NoteImageAttachment[]): LhUserMessage {
     return {
         id: newMessageId(),
         role: "user",
         content: text,
+        ...(images && images.length > 0 ? { images } : {}),
         timestamp: Date.now(),
     };
 }
@@ -98,6 +100,7 @@ export function newSiyuanNoteContextMessage(opts: {
     hPath: string;
     markdownExcerpt: string;
     passive?: boolean;
+    images?: NoteImageAttachment[];
 }): LhMarkerMessage {
     const header = opts.passive
         ? `[Active SiYuan Note Context] — the learner currently has their SiYuan note "${opts.title}" (docId: \`${opts.docId}\`, path: \`${opts.hPath}\`) open in the editor. If their message relates to this note or its questions, use this content; if their message is clearly about an unrelated topic, disregard it.`
@@ -105,7 +108,7 @@ export function newSiyuanNoteContextMessage(opts: {
 
     const content = [
         header,
-        `You can read additional sections or related notes using \`siyuan_read_note\`, \`siyuan_find_notes\`, or \`siyuan_grep_notes\`.`,
+        `You can read additional sections or related notes using \`siyuan_read_note\`, \`siyuan_find_notes\`, or \`siyuan_grep_notes\`, and inspect any specific embedded image (e.g. \`assets/....png\`) on demand using \`siyuan_view_image\`.`,
         "",
         "--- BEGIN NOTE EXCERPT ---",
         opts.markdownExcerpt,

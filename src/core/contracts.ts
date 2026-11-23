@@ -207,10 +207,16 @@ export interface ToolCallContentBlock {
 
 export type AssistantContentBlock = TextContentBlock | ThinkingContentBlock | ToolCallContentBlock;
 
+export interface NoteImageAttachment {
+    path: string;
+    dataUrl: string;
+}
+
 export interface LhUserMessage {
     id: string;
     role: "user";
     content: string;
+    images?: NoteImageAttachment[];
     timestamp: number;
 }
 

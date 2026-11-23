@@ -145,10 +145,13 @@ export function renderMarkdown(md: string): string {
         },
     );
 
+    const fixAssetImgSrc = (html: string): string =>
+        html.replace(/(<img\b[^>]*\bsrc=["'])(?:\.\/)?(assets\/[^"']+["'])/gi, "$1/$2");
+
     const lute = getLute();
     if (lute && typeof lute.Md2HTML === "function") {
         try {
-            return restoreMath(lute.Md2HTML(withBlockRefs));
+            return fixAssetImgSrc(restoreMath(lute.Md2HTML(withBlockRefs)));
         } catch {
             // Fall through to lightweight fallback
         }
@@ -166,5 +169,5 @@ export function renderMarkdown(md: string): string {
             return `<p>${escaped}</p>`;
         })
         .join("\n");
-    return restoreMath(fallbackHtml);
+    return fixAssetImgSrc(restoreMath(fallbackHtml));
 }

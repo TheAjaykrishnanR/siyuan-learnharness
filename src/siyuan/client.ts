@@ -290,3 +290,106 @@ export async function searchBlocksForRef(query: string, limit = 15): Promise<Siy
     return grepNotes(trimmed, { limit: safeLimit });
 }
 
+const IMAGE_EXT_MIME: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+};
+
+/** Extract unique SiYuan `assets/...` image paths from Markdown, HTML, or SiYuan annotation refs. */
+export function extractAssetImagePaths(markdownOrHtml: string): string[] {
+    if (!markdownOrHtml) return [];
+    const seen = new Set<string>();
+    const addIfImage = (raw: string) => {
+        const noQuery = raw.trim().split(/[?#]/)[0] ?? "";
+        const clean = noQuery.replace(/^\.?\//, "").replace(/^data\//i, "");
+        if (!/^assets\//i.test(clean)) return;
+        const ext = clean.split(".").pop()?.toLowerCase() ?? "";
+        if (!(ext in IMAGE_EXT_MIME)) return;
+        seen.add(clean);
+    };
+
+    // Match any `assets/...(.png|.jpg|.jpeg|.webp|.gif)` reference across Markdown, HTML, and SiYuan annotations
+    for (const m of markdownOrHtml.matchAll(/(?:\/?data\/|\.?\/)?(assets\/[^\s)"'<>`]+\.(?:png|jpe?g|webp|gif))/gi)) {
+        if (m[1]) addIfImage(m[1]);
+    }
+    return Array.from(seen);
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+}
+
+/** Read a SiYuan asset image via `/api/file/getFile` (with `/assets/...` fallback) and return a base64 `data:` URL. */
+export async function readSiyuanImageDataUrl(assetPath: string): Promise<string | null> {
+    const trimmed = assetPath.trim();
+    if (!trimmed) return null;
+    if (/^data:image\//i.test(trimmed)) return trimmed;
+
+    const clean = trimmed.replace(/^\.?\//, "").replace(/^data\//i, "");
+    if (!clean) return null;
+    const ext = clean.split(".").pop()?.toLowerCase() ?? "png";
+    const mime = IMAGE_EXT_MIME[ext] ?? "image/png";
+    const workspacePath = `/data/${clean}`;
+
+    // 1. Try SiYuan Kernel /api/file/getFile
+    try {
+        const res = await fetch("/api/file/getFile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: workspacePath }),
+        });
+        if (res.ok) {
+            const contentType = res.headers.get("content-type") || "";
+            if (!contentType.includes("application/json")) {
+                const buf = await res.arrayBuffer();
+                if (buf.byteLength > 0 && buf.byteLength <= 5 * 1024 * 1024) {
+                    return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
+                }
+            }
+        }
+    } catch {
+        // fall through to direct /assets/ fetch
+    }
+
+    // 2. Fallback: SiYuan's root-relative static asset route (/assets/...)
+    try {
+        const res = await fetch(`/${clean}`);
+        if (res.ok) {
+            const contentType = res.headers.get("content-type") || "";
+            if (!contentType.includes("text/html") && !contentType.includes("application/json")) {
+                const buf = await res.arrayBuffer();
+                if (buf.byteLength > 0 && buf.byteLength <= 5 * 1024 * 1024) {
+                    return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
+                }
+            }
+        }
+    } catch (err) {
+        console.warn("[LearnHarness Vision] Failed to read asset image:", clean, err);
+    }
+
+    console.warn("[LearnHarness Vision] Could not load image bytes for:", clean);
+    return null;
+}
+
+/** Resolve up to `maxImages` SiYuan asset paths into `{ path, dataUrl }` entries. */
+export async function readSiyuanImages(
+    assetPaths: readonly string[],
+    maxImages = 12,
+): Promise<Array<{ path: string; dataUrl: string }>> {
+    const out: Array<{ path: string; dataUrl: string }> = [];
+    for (const p of assetPaths.slice(0, maxImages)) {
+        const dataUrl = await readSiyuanImageDataUrl(p);
+        if (dataUrl) out.push({ path: p, dataUrl });
+    }
+    return out;
+}
+

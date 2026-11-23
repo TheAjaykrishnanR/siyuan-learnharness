@@ -256,12 +256,37 @@ interface WireToolCall {
     };
 }
 
+type WireContentPart =
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } };
+
 interface WireMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content?: string | null;
+    content?: string | WireContentPart[] | null;
     reasoning_content?: string;
     tool_calls?: WireToolCall[];
     tool_call_id?: string;
+}
+
+function supportsVision(config: ResolvedModelConfig): boolean {
+    if (config.provider === "deepseek") return false;
+    const m = config.model.toLowerCase();
+    if (m.includes("deepseek-chat") || m.includes("deepseek-reasoner")) return false;
+    return true;
+}
+
+function buildUserContent(
+    text: string,
+    images: ReadonlyArray<{ path: string; dataUrl: string }> | undefined,
+    includeImages: boolean,
+): string | WireContentPart[] {
+    if (!includeImages || !images || images.length === 0) return text;
+    const parts: WireContentPart[] = [{ type: "text", text }];
+    for (const img of images) {
+        parts.push({ type: "text", text: `[Attached image: ${img.path}]` });
+        parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+    }
+    return parts;
 }
 
 /** Convert LhMessage[] history + systemPrompt into OpenAI-compatible wire messages. */
@@ -269,6 +294,7 @@ export function buildWireMessages(
     systemPrompt: string,
     messages: readonly LhMessage[],
     includeReasoningContent: boolean,
+    includeImages = true,
 ): WireMessage[] {
     const out: WireMessage[] = [{ role: "system", content: systemPrompt }];
 
@@ -277,12 +303,16 @@ export function buildWireMessages(
         if (m.role === "custom") {
             if (m.customType === "plan-block" || m.customType === "problem-dismissed") continue;
             if (m.content.trim().length > 0) {
-                out.push({ role: "user", content: m.content });
+                const imgs =
+                    m.customType === "siyuan-note-context"
+                        ? ((m.details as any)?.images as Array<{ path: string; dataUrl: string }> | undefined)
+                        : undefined;
+                out.push({ role: "user", content: buildUserContent(m.content, imgs, includeImages) });
             }
             continue;
         }
         if (m.role === "user") {
-            out.push({ role: "user", content: m.content });
+            out.push({ role: "user", content: buildUserContent(m.content, m.images, includeImages) });
             continue;
         }
         if (m.role === "toolResult") {
@@ -381,7 +411,7 @@ export async function streamModelStep(opts: {
     }
 
     const isReasoner = config.model.includes("reasoner");
-    const wireMessages = buildWireMessages(systemPrompt, messages, isReasoner);
+    const wireMessages = buildWireMessages(systemPrompt, messages, isReasoner, supportsVision(config));
 
     const toolList = Object.values(tools).map((t) => ({
         type: "function" as const,

@@ -9,6 +9,7 @@ import {
     type ChatRecord,
     type LhAssistantMessage,
     type LhToolResultMessage,
+    type NoteImageAttachment,
 } from "../core/contracts";
 import { getGraph, type GraphDeps } from "../core/graph";
 import {
@@ -20,6 +21,7 @@ import {
     newHandoffMessage,
     newMessageId,
     newNextMessage,
+    newSiyuanNoteContextMessage,
     newThinkingMessage,
     newUserMessage,
 } from "../core/messages";
@@ -120,9 +122,9 @@ export class SessionRunner {
     }
 
     /** Send a learner user message and run the agent turn. */
-    public async sendUserMessage(chatId: string, text: string): Promise<void> {
+    public async sendUserMessage(chatId: string, text: string, images?: NoteImageAttachment[]): Promise<void> {
         const trimmed = text.trim();
-        if (!trimmed) return;
+        if (!trimmed && (!images || images.length === 0)) return;
         const record = this.deps.chatStore.getChat(chatId);
         if (!record) throw new Error(`Chat not found: ${chatId}`);
 
@@ -141,7 +143,7 @@ export class SessionRunner {
             record.title = titleFromPrompt(trimmed);
         }
 
-        record.messages.push(newUserMessage(trimmed));
+        record.messages.push(newUserMessage(trimmed, images));
         this.deps.chatStore.saveChat(record);
         this.emit(chatId);
 
@@ -350,6 +352,7 @@ export class SessionRunner {
                 }
 
                 let pausedOnTerminalTool = false;
+                const requestedImages: NoteImageAttachment[] = [];
 
                 for (const call of toolCalls) {
                     if (ctrl.signal.aborted) break;
@@ -415,6 +418,26 @@ export class SessionRunner {
                         timestamp: Date.now(),
                     };
                     freshRecord.messages.push(toolResultMsg);
+                    this.deps.chatStore.saveChat(freshRecord);
+
+                    if (call.name === "siyuan_view_image" && !result.isError) {
+                        const img = (result.details as { image?: NoteImageAttachment } | undefined)?.image;
+                        if (img?.path && img?.dataUrl) {
+                            requestedImages.push(img);
+                        }
+                    }
+                }
+
+                if (!ctrl.signal.aborted && !pausedOnTerminalTool && requestedImages.length > 0) {
+                    freshRecord.messages.push(
+                        newSiyuanNoteContextMessage({
+                            docId: requestedImages[0]!.path,
+                            title: requestedImages.map((i) => i.path.split("/").pop() || i.path).join(", "),
+                            hPath: requestedImages[0]!.path,
+                            markdownExcerpt: `Requested image(s): ${requestedImages.map((i) => i.path).join(", ")}`,
+                            images: requestedImages,
+                        }),
+                    );
                     this.deps.chatStore.saveChat(freshRecord);
                 }
 
