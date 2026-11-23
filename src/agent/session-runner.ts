@@ -126,6 +126,15 @@ export class SessionRunner {
         const record = this.deps.chatStore.getChat(chatId);
         if (!record) throw new Error(`Chat not found: ${chatId}`);
 
+        // If a Question Card was open when the user chose to reply in chat,
+        // cleanly resolve the dangling toolCall before appending the user message.
+        const pending = danglingQuestionOf(record.messages);
+        if (pending) {
+            const qd = buildQuestionDataFromToolCall(pending.toolCallId, pending.tool, pending.input);
+            const ans = dismissedAnswer(qd.kind, qd.question);
+            record.messages.push(newAnswerResult(pending.toolCallId, pending.tool, ans));
+        }
+
         // Auto-title on first user message
         const hasUserMsg = record.messages.some((m) => m.role === "user");
         if (!hasUserMsg && (record.title === "New Learning Session" || record.title === "New Practice Session")) {
@@ -158,7 +167,7 @@ export class SessionRunner {
         await this.runAgentTurn(chatId);
     }
 
-    /** Dismiss/skip the currently open question. */
+    /** Skip the currently open question and immediately continue the agent turn. */
     public dismissQuestion(chatId: string): void {
         const record = this.deps.chatStore.getChat(chatId);
         if (!record) return;
@@ -171,6 +180,8 @@ export class SessionRunner {
         record.messages.push(resultMsg);
         this.deps.chatStore.saveChat(record);
         this.emit(chatId);
+
+        void this.runAgentTurn(chatId);
     }
 
     /** Submit a thinking trace or solution attempt during a Practice session. */

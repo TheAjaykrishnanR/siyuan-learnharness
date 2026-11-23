@@ -2,10 +2,11 @@
  * Local in-plugin WebAssembly Speech-to-Text powered by Oído (`lokutor-ai/oido`).
  *
  * - Runs Oído's 67 KB Conformer-CTC C engine compiled to WebAssembly (`oido.wasm`).
- * - Downloads `oido_v2.tlm` + `oido_v2a.tnm` / `oido_v2b.tnm` once and caches them
- *   in the browser Cache API (`learnharness-oido-v1`) for 100% offline use thereafter.
- * - Captures microphone audio via WebAudio (`AudioContext` + `AnalyserNode` + `ScriptProcessorNode`)
- *   for both a live 60fps waveform AND true real-time word-by-word streaming transcription.
+ * - Loads bundled `oido_v2.tlm` + `oido_v2a.tnm` / `oido_v2b.tnm` directly from
+ *   SiYuan's `/api/file/getFile` (100% offline, zero downloads).
+ * - Starts WebAudio capture (`AudioContext` + `AnalyserNode` + `ScriptProcessorNode`)
+ *   and live 60fps waveform IMMEDIATELY inside the user's click gesture so AudioContext
+ *   is never suspended and words stream into the textbox as soon as they are decoded.
  */
 
 export type SttState = "idle" | "recording" | "loading-model" | "transcribing";
@@ -93,6 +94,7 @@ class LocalOidoSttService {
     private mod: OidoWasmInstance | null = null;
     private loadedVariant: string | null = null;
     private loadingPromise: Promise<void> | null = null;
+    private engineReadyForSession = false;
 
     private modelPtr = 0;
     private lmPtr = 0;
@@ -107,6 +109,7 @@ class LocalOidoSttService {
     private analyser: AnalyserNode | null = null;
     private processor: ScriptProcessorNode | null = null;
     private sourceNode: MediaStreamAudioSourceNode | null = null;
+    private silentGain: GainNode | null = null;
     private rafId: number | null = null;
 
     private pcmAccum: Int16Array[] = [];
@@ -130,53 +133,75 @@ class LocalOidoSttService {
         this.pcmAccum = [];
         this.pcmAccumLen = 0;
         this.lastPartialText = "";
+        this.engineReadyForSession = false;
 
-        // Ensure Oído WASM engine & weights are loaded before resetting stream
-        await this.ensureLoaded(variantKey, callbacks.onStatus);
-        if (!this.mod) throw new Error("Oído WASM engine failed to initialize.");
-        this.mod._oido_reset();
-
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        this.mediaStream = stream;
-
+        // 1. Create & resume AudioContext IMMEDIATELY inside the click gesture so it is never suspended
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         const audioCtx = new AudioCtx() as AudioContext;
         this.audioCtx = audioCtx;
+        if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+        }
+
+        // 2. Capture microphone immediately and start the live waveform right away
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.mediaStream = stream;
 
         const source = audioCtx.createMediaStreamSource(stream);
         this.sourceNode = source;
 
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 128;
-        analyser.smoothingTimeConstant = 0.75;
+        analyser.smoothingTimeConstant = 0.7;
         this.analyser = analyser;
 
         const processor = audioCtx.createScriptProcessor(4096, 1, 1);
         this.processor = processor;
 
+        // Silent gain node keeps ScriptProcessorNode active in Chromium without playing mic echo
+        const silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0;
+        this.silentGain = silentGain;
+
         source.connect(analyser);
         analyser.connect(processor);
-        processor.connect(audioCtx.destination);
+        processor.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
 
         const inputRate = audioCtx.sampleRate;
 
         processor.onaudioprocess = (ev) => {
-            if (!this.recording || !this.mod) return;
+            if (!this.recording) return;
             const raw = ev.inputBuffer.getChannelData(0);
             const pcm16 = downsampleFloatToInt16(raw, inputRate);
             this.pcmAccum.push(pcm16);
             this.pcmAccumLen += pcm16.length;
 
-            if (this.pcmAccumLen >= FEED_CHUNK_SAMPLES) {
+            if (this.engineReadyForSession && this.mod && this.pcmAccumLen >= FEED_CHUNK_SAMPLES) {
                 this.feedAccumulatedPcm();
             }
         };
 
         this.recording = true;
-        callbacks.onStatus?.({ state: "recording", message: "Listening (Oído)..." });
-
         if (callbacks.canvas) {
             this.startWaveformLoop(callbacks.canvas);
+        }
+
+        // 3. Load Oído WASM + bundled models (buffered speech is fed immediately once ready)
+        try {
+            await this.ensureLoaded(variantKey, callbacks.onStatus);
+            if (!this.recording || !this.mod) return;
+            this.mod._oido_reset();
+            this.engineReadyForSession = true;
+            callbacks.onStatus?.({ state: "recording", message: "Listening (Oído)..." });
+            if (this.pcmAccumLen > 0) {
+                this.feedAccumulatedPcm();
+            }
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            console.error("[LearnHarness Oído] Load failed:", error);
+            await this.stopLiveSession();
+            throw error;
         }
     }
 
@@ -194,6 +219,7 @@ class LocalOidoSttService {
             this.processor?.disconnect();
             this.analyser?.disconnect();
             this.sourceNode?.disconnect();
+            this.silentGain?.disconnect();
         } catch {
             // ignore
         }
@@ -203,13 +229,14 @@ class LocalOidoSttService {
         this.processor = null;
         this.analyser = null;
         this.sourceNode = null;
+        this.silentGain = null;
         this.mediaStream = null;
         this.audioCtx = null;
 
         const cb = this.activeCallbacks;
         let finalText = this.lastPartialText;
 
-        if (this.mod) {
+        if (this.engineReadyForSession && this.mod) {
             if (this.pcmAccumLen > 0) {
                 this.feedAccumulatedPcm();
             }
@@ -218,8 +245,12 @@ class LocalOidoSttService {
                 finalText = rawFinal;
                 this.lastPartialText = rawFinal;
             }
+        } else {
+            this.pcmAccum = [];
+            this.pcmAccumLen = 0;
         }
 
+        this.engineReadyForSession = false;
         if (finalText) {
             cb?.onFinal?.(finalText);
         }
@@ -298,16 +329,21 @@ class LocalOidoSttService {
                 const OidoModuleFactory = require("../assets/oido/oido.js") as (
                     arg?: Record<string, unknown>,
                 ) => Promise<OidoWasmInstance>;
-                this.mod = await OidoModuleFactory({
-                    instantiateWasm: (
-                        imports: WebAssembly.Imports,
-                        receive: (instance: WebAssembly.Instance) => void,
-                    ) => {
-                        void WebAssembly.instantiate(wasmBinary, imports).then((res) => {
-                            receive(res.instance);
-                        });
-                        return {};
-                    },
+
+                this.mod = await new Promise<OidoWasmInstance>((resolve, reject) => {
+                    OidoModuleFactory({
+                        instantiateWasm: (
+                            imports: WebAssembly.Imports,
+                            receive: (instance: WebAssembly.Instance) => void,
+                        ) => {
+                            WebAssembly.instantiate(wasmBinary, imports)
+                                .then((res) => receive(res.instance))
+                                .catch((err) => reject(err));
+                            return {};
+                        },
+                    })
+                        .then(resolve)
+                        .catch(reject);
                 });
             }
 
@@ -390,20 +426,19 @@ class LocalOidoSttService {
     }
 
     private startWaveformLoop(canvas: HTMLCanvasElement): void {
-        const analyser = this.analyser;
-        if (!analyser) return;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        const bins = new Uint8Array(analyser.frequencyBinCount);
+        const bins = new Uint8Array(this.analyser ? this.analyser.frequencyBinCount : 64);
 
         const draw = () => {
             if (!this.recording || !this.analyser) return;
             this.rafId = requestAnimationFrame(draw);
 
             const dpr = window.devicePixelRatio || 1;
-            const w = canvas.clientWidth || 160;
-            const h = canvas.clientHeight || 26;
+            const rect = canvas.getBoundingClientRect();
+            const w = Math.max(80, Math.floor(rect.width || canvas.clientWidth || 160));
+            const h = Math.max(20, Math.floor(rect.height || canvas.clientHeight || 24));
             if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
                 canvas.width = Math.floor(w * dpr);
                 canvas.height = Math.floor(h * dpr);
@@ -416,17 +451,16 @@ class LocalOidoSttService {
             const gap = 2;
             const barW = Math.max(2, (w - gap * (barCount - 1)) / barCount);
 
-            ctx.fillStyle = getComputedStyle(canvas).color || "#ef4444";
+            ctx.fillStyle = "#ef4444";
 
             for (let i = 0; i < barCount; i++) {
-                const binIdx = Math.min(bins.length - 1, Math.floor((i / barCount) * (bins.length * 0.7)));
-                const norm = (bins[binIdx] ?? 0) / 255;
+                const binIdx = Math.min(bins.length - 1, Math.floor((i / barCount) * (bins.length * 0.65)));
+                // Boost low-to-mid speaking amplitudes so waveform visibly reacts
+                const norm = Math.min(1, ((bins[binIdx] ?? 0) / 255) * 1.6);
                 const barH = Math.max(3, norm * (h - 4));
                 const x = i * (barW + gap);
                 const y = (h - barH) / 2;
-                ctx.beginPath();
-                ctx.roundRect(x, y, barW, barH, 1.5);
-                ctx.fill();
+                ctx.fillRect(x, y, barW, barH);
             }
         };
 

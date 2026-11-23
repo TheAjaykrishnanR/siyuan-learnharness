@@ -696,6 +696,19 @@
     flex-shrink: 0;
 }
 
+.lh-math-block {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 0;
+    margin: 4px 0;
+    text-align: center;
+}
+
+.lh-math-inline {
+    display: inline-block;
+    vertical-align: middle;
+}
+
 .lh-q-thinking {
     font-size: 12.5px;
     resize: vertical;
