@@ -697,16 +697,45 @@
 }
 
 .lh-math-block {
+    display: block;
+    width: 100%;
+    text-align: center !important;
     overflow-x: auto;
     overflow-y: hidden;
     padding: 4px 0;
-    margin: 4px 0;
-    text-align: center;
+    margin: 6px 0;
+
+    .katex-display {
+        display: block !important;
+        width: 100%;
+        margin: 0 auto !important;
+        text-align: center !important;
+    }
+
+    .katex-display > .katex {
+        display: inline-block !important;
+        text-align: center !important;
+        margin: 0 auto !important;
+    }
 }
 
 .lh-math-inline {
-    display: inline-block;
-    vertical-align: middle;
+    display: inline;
+
+    .katex {
+        display: inline;
+    }
+}
+
+.lh-math-block .katex-mathml,
+.lh-math-inline .katex-mathml {
+    position: absolute;
+    clip: rect(1px, 1px, 1px, 1px);
+    padding: 0;
+    border: 0;
+    height: 1px;
+    width: 1px;
+    overflow: hidden;
 }
 
 .lh-q-thinking {

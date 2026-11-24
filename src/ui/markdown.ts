@@ -1,6 +1,11 @@
 /**
- * Safe Markdown + LaTeX (KaTeX) + Callout renderer using SiYuan's built-in Lute engine
- * with guaranteed KaTeX math rendering and a clean fallback formatter.
+ * Safe Markdown + Universal LaTeX (KaTeX) + Callout renderer using SiYuan's built-in Lute engine.
+ *
+ * Includes a model-agnostic presentation-time math healer (inspired by LearnHarness's
+ * `math-delims.ts`) that repairs:
+ *   1. JSON-swallowed backslashes (\f -> form feed in \frac, \t -> tab in \theta, \b -> \beta, \r -> \rho, \n -> \nabla)
+ *   2. Over-escaped commands (\\frac, \\\\frac, \\sin, \\alpha) without breaking matrix row breaks
+ *   3. Varied delimiters ($$...$$, \[...\], \(...\), $...$, and spaced $ \frac{1}{2} $)
  */
 
 import katex from "katex";
@@ -48,9 +53,88 @@ export function escapeHtml(str: string): string {
         .replace(/'/g, "&#39;");
 }
 
+// ─── Universal Model-Agnostic TeX Healer ────────────────────────────────────
+
+const knownCommandCache = new Map<string, boolean>();
+
+function knownTexCommand(name: string): boolean {
+    if (!/^[A-Za-z]+$/.test(name)) return false;
+    const cached = knownCommandCache.get(name);
+    if (cached !== undefined) return cached;
+    let known = true;
+    try {
+        katex.renderToString("\\" + name, { throwOnError: true, trust: false, strict: false });
+    } catch (err) {
+        known = !String(err).includes("Undefined control sequence: \\" + name);
+    }
+    knownCommandCache.set(name, known);
+    return known;
+}
+
+function canParseTex(body: string, displayMode: boolean): boolean {
+    try {
+        katex.renderToString(body, { throwOnError: true, trust: false, strict: false, displayMode });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+const CONTROL_DEBRIS: Record<string, string> = {
+    "\b": "\\b",
+    "\t": "\\t",
+    "\v": "\\v",
+    "\f": "\\f",
+    "\r": "\\r",
+};
+
+/** Stage 1: Restore JSON-swallowed backslashes (\f->\frac, \t->\theta, \b->\beta, \r->\rho, inline \n->\nabla). */
+function restoreMathEscapes(body: string, displayMode: boolean): string {
+    if (!/[\b\t\n\v\f\r]/.test(body)) return body;
+    let out = body.replace(/[\b\t\v\f\r]/g, (char, offset: number) => {
+        if (char === "\r" && body[offset + 1] === "\n") return char;
+        const suffix = /^[A-Za-z]+/.exec(body.slice(offset + 1))?.[0];
+        if (suffix && knownTexCommand(CONTROL_DEBRIS[char]!.slice(1) + suffix)) {
+            return CONTROL_DEBRIS[char]!;
+        }
+        return char;
+    });
+    if (!displayMode) {
+        out = out.replace(/\n([A-Za-z]+)/g, (whole, suffix: string) =>
+            knownTexCommand("n" + suffix) ? "\\n" + suffix : whole,
+        );
+    }
+    return out;
+}
+
+/** Stage 2: Collapse over-escaped commands (\\frac -> \frac, \\\\frac -> \frac) while preserving valid matrix row breaks. */
+function healOverescapedCommands(body: string, displayMode: boolean): string {
+    if (!body.includes("\\\\")) return body;
+    const recovered = body.replace(/(\\+)([A-Za-z]+|[,;:!|{}%])/g, (whole, run: string, next: string) => {
+        if (run.length % 2 !== 0) return whole;
+        if (/^[A-Za-z]+$/.test(next)) {
+            if (next.length > 1 && knownTexCommand(next)) {
+                return "\\" + next;
+            }
+            return whole;
+        }
+        // Over-escaped command symbol like \\{ or \\} or \\%
+        return "\\" + next;
+    });
+    if (recovered !== body && !canParseTex(recovered, displayMode) && canParseTex(body, displayMode)) {
+        return body;
+    }
+    return recovered;
+}
+
+export function healTexBody(tex: string, displayMode: boolean): string {
+    const step1 = restoreMathEscapes(tex, displayMode);
+    return healOverescapedCommands(step1, displayMode);
+}
+
 function renderTex(tex: string, displayMode: boolean): string {
     ensureKatexCss();
-    const cleaned = tex.trim();
+    const cleaned = healTexBody(tex, displayMode).trim();
     if (!cleaned) return "";
     try {
         const html = katex.renderToString(cleaned, {
@@ -60,7 +144,9 @@ function renderTex(tex: string, displayMode: boolean): string {
             trust: false,
             output: "htmlAndMathml",
         });
-        return displayMode ? `<div class="lh-math-block">${html}</div>` : `<span class="lh-math-inline">${html}</span>`;
+        return displayMode
+            ? `<div class="lh-math-block">${html}</div>`
+            : `<span class="lh-math-inline">${html}</span>`;
     } catch {
         return displayMode
             ? `<div class="lh-math-block"><code>${escapeHtml(cleaned)}</code></div>`
@@ -70,8 +156,8 @@ function renderTex(tex: string, displayMode: boolean): string {
 
 /**
  * Extract fenced/inline code spans first so `$` inside code is untouched,
- * then replace `$$...$$`, `\[...\]`, `$...$`, and `\(...\)` with placeholders
- * holding pre-rendered KaTeX HTML so Lute cannot mangle LaTeX backslashes/underscores.
+ * then replace `$$...$$`, `\[...\]`, `\(...\)`, and `$...$` (including spaced `$ \frac{1}{2} $`)
+ * with placeholders holding pre-rendered KaTeX HTML so Lute cannot mangle LaTeX.
  */
 function extractMathPlaceholders(input: string): { text: string; restore: (html: string) => string } {
     const codeStash: string[] = [];
@@ -90,17 +176,40 @@ function extractMathPlaceholders(input: string): { text: string; restore: (html:
         return `@@LHMATH${idx}@@`;
     };
 
-    // 2. Display math: $$...$$ and \[...\]
-    work = work.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => stashMath(tex, true));
-    work = work.replace(/\\\[([\s\S]+?)\\\]/g, (_m, tex) => stashMath(tex, true));
+    // 2. Display vs inline $$...$$: only use displayMode when $$...$$ is standalone on its own line(s);
+    //    if embedded mid-sentence (e.g. "where $$x$$ is..."), render inline so no unwanted newlines appear.
+    work = work.replace(/\$\$([\s\S]+?)\$\$/g, (match, tex: string, offset: number, full: string) => {
+        const before = full.slice(0, offset);
+        const after = full.slice(offset + match.length);
+        const lineStart = /(?:^|\n)[ \t]*$/.test(before);
+        const lineEnd = /^[ \t]*(?:\r?\n|$)/.test(after);
+        const isStandalone = (lineStart && lineEnd) || tex.includes("\n");
+        return stashMath(tex, isStandalone);
+    });
+    work = work.replace(/\\{1,2}\[([\s\S]+?)\\{1,2}\]/g, (match, tex: string, offset: number, full: string) => {
+        const before = full.slice(0, offset);
+        const after = full.slice(offset + match.length);
+        const lineStart = /(?:^|\n)[ \t]*$/.test(before);
+        const lineEnd = /^[ \t]*(?:\r?\n|$)/.test(after);
+        const isStandalone = (lineStart && lineEnd) || tex.includes("\n");
+        return stashMath(tex, isStandalone);
+    });
 
-    // 3. Inline math: \(...\)
-    work = work.replace(/\\\(([\s\S]+?)\\\)/g, (_m, tex) => stashMath(tex, false));
+    // 3. Inline math: \(...\) and over-escaped \\(...\\)
+    work = work.replace(/\\{1,2}\(([\s\S]+?)\\{1,2}\)/g, (_m, tex) => stashMath(tex, false));
 
-    // 4. Inline math: $...$ (single line, no leading/trailing space right inside $, avoids "$5 and $10")
-    work = work.replace(/(^|[^\\$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\$)/g, (match, prefix, tex) => {
-        // Avoid accidental currency matches like "$50" followed by another "$20" in prose
-        if (/^\d[\d,.\s]*$/.test(tex.trim())) return match;
+    // 4. Inline math: $...$ (single line; allows inner spaces like "$ \frac{1}{2} $" if it contains math/TeX)
+    work = work.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (match, prefix, tex: string) => {
+        const trimmed = tex.trim();
+        if (!trimmed) return match;
+        // Skip pure currency numbers like "$50" ... "$20"
+        if (/^\d[\d,.\s]*$/.test(trimmed)) return match;
+        const hasOuterSpace = /^\s|\s$/.test(tex);
+        if (hasOuterSpace) {
+            // Only treat spaced "$ ... $" as math if it clearly contains TeX commands, math operators, or swallowed escapes
+            const looksLikeMath = /[\\^_{}=<>+\-*/\b\t\v\f\r]/.test(tex);
+            if (!looksLikeMath) return match;
+        }
         return `${prefix}${stashMath(tex, false)}`;
     });
 
@@ -108,7 +217,9 @@ function extractMathPlaceholders(input: string): { text: string; restore: (html:
     work = work.replace(/@@LHCODE(\d+)@@/g, (_m, idx) => codeStash[Number(idx)] ?? "");
 
     const restore = (html: string): string =>
-        html.replace(/@@LHMATH(\d+)@@/g, (_m, idx) => mathStash[Number(idx)] ?? "");
+        html
+            .replace(/@@LHMATH(\d+)@@/g, (_m, idx) => mathStash[Number(idx)] ?? "")
+            .replace(/<p>\s*(<div class="lh-math-block">[\s\S]*?<\/div>)\s*<\/p>/g, "$1");
 
     return { text: work, restore };
 }
