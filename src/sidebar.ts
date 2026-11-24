@@ -17,6 +17,8 @@ import {
     type LhAssistantMessage,
     type LhToolResultMessage,
     type ProbeAssessment,
+    type SideNoteIntent,
+    type SideNoteThread,
 } from "./core/contracts";
 import {
     activeProblemOf,
@@ -80,6 +82,11 @@ export class SidebarView {
     private boundDocMouseDownListener?: (e: MouseEvent) => void;
     private selectionBarEl!: HTMLElement;
     private currentSelectionQuote = "";
+    private currentSelectionAnchor: {
+        messageId: string;
+        blockIndex: number;
+        previousBlockText?: string;
+    } | null = null;
     private graphBtnEl!: HTMLElement;
     private planStripEl!: HTMLElement;
     private chatBodyEl!: HTMLElement;
@@ -95,6 +102,7 @@ export class SidebarView {
 
     private unsubStore: (() => void) | null = null;
     private unsubRunner: (() => void) | null = null;
+    private unsubSideNote: (() => void) | null = null;
 
     constructor(
         rootElement: HTMLElement,
@@ -139,11 +147,18 @@ export class SidebarView {
                 this.syncComposerState();
             }
         });
+
+        this.unsubSideNote = this.runner.subscribeSideNote((changedChatId, threadId) => {
+            if (changedChatId === this.activeChatId && !this.showGraphOverlay) {
+                this.updateSideNoteInPlace(threadId);
+            }
+        });
     }
 
     public destroy(): void {
         this.unsubStore?.();
         this.unsubRunner?.();
+        this.unsubSideNote?.();
         if (this.boundDocClickListener) {
             document.removeEventListener("click", this.boundDocClickListener);
         }
@@ -275,6 +290,7 @@ export class SidebarView {
                     <button type="button" class="lh-selection-bar__btn" data-sel-action="bridge" title="Explain how this follows from the previous step">↳ Why this follows</button>
                     <button type="button" class="lh-selection-bar__btn" data-sel-action="relevance" title="Explain why this matters to the goal">🎯 Why it matters</button>
                     <button type="button" class="lh-selection-bar__btn" data-sel-action="example" title="Give a concrete example or intuition">💡 Example</button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="custom" title="Ask your own question about this selection">💬 Ask</button>
                 </div>
             </div>
         `;
@@ -720,6 +736,7 @@ export class SidebarView {
         }
 
         transcriptEl.innerHTML = blocksHtml.join("\n");
+        this.decorateAssistantBlocks(transcriptEl, chat);
         this.syncScrollDownButton();
     }
 
@@ -824,7 +841,7 @@ export class SidebarView {
         }
 
         if (parts.length === 0) return "";
-        return `<div class="lh-msg lh-msg--assistant">${parts.join("\n")}</div>`;
+        return `<div class="lh-msg lh-msg--assistant" data-msg-id="${escapeHtml(m.id)}">${parts.join("\n")}</div>`;
     }
 
     private describeReadToolCall(name: string, args: Record<string, unknown>): string {
@@ -1398,6 +1415,7 @@ export class SidebarView {
 
         this.bindSelectionBarEvents();
         this.bindLatexCopyHandler();
+        this.bindSideNoteEvents();
     }
 
     private syncScrollDownButton(): void {
@@ -1413,6 +1431,7 @@ export class SidebarView {
 
     private hideSelectionBar(): void {
         this.currentSelectionQuote = "";
+        this.currentSelectionAnchor = null;
         this.selectionBarEl?.classList.add("fn__none");
     }
 
@@ -1435,6 +1454,7 @@ export class SidebarView {
 
         const wrapper = document.createElement("div");
         wrapper.appendChild(range.cloneContents());
+        wrapper.querySelectorAll(".lh-block-actions").forEach((el) => el.remove());
 
         let hasMath = false;
         wrapper.querySelectorAll(".katex").forEach((katexEl) => {
@@ -1554,6 +1574,22 @@ export class SidebarView {
         }
 
         this.currentSelectionQuote = quote.length > 420 ? `${quote.slice(0, 417)}...` : quote;
+
+        // Capture block anchor if selection is inside a decorated assistant step block
+        const stepBlock = anchorEl.closest(".lh-step-block") as HTMLElement | null;
+        const msgWrap = anchorEl.closest(".lh-msg--assistant[data-msg-id]") as HTMLElement | null;
+        if (stepBlock && msgWrap && msgWrap.dataset.msgId) {
+            const blockIndex = Number(stepBlock.dataset.blockIdx ?? "0");
+            const prevBlock = this.findPreviousStepBlock(msgWrap, blockIndex);
+            this.currentSelectionAnchor = {
+                messageId: msgWrap.dataset.msgId,
+                blockIndex: Number.isNaN(blockIndex) ? 0 : blockIndex,
+                previousBlockText: prevBlock ? this.extractBlockLatexText(prevBlock) : undefined,
+            };
+        } else {
+            this.currentSelectionAnchor = null;
+        }
+
         this.selectionBarEl.classList.remove("fn__none");
 
         // Measure and position cleanly above (or below if near top) clamped to viewport
@@ -1611,12 +1647,37 @@ export class SidebarView {
         this.selectionBarEl.addEventListener("click", (ev) => {
             const btn = (ev.target as HTMLElement).closest("[data-sel-action]") as HTMLElement | null;
             if (!btn) return;
-            const action = btn.dataset.selAction;
+            const action = btn.dataset.selAction as SideNoteIntent | undefined;
             const quote = this.currentSelectionQuote;
+            const anchor = this.currentSelectionAnchor;
             this.hideSelectionBar();
             window.getSelection()?.removeAllRanges();
 
-            if (!quote || !this.activeChatId) return;
+            if (!quote || !this.activeChatId || !action) return;
+
+            // Prefer non-polluting inline side-note when selection is anchored to an assistant block
+            if (anchor) {
+                if (action === "custom") {
+                    const threadId = this.runner.openCustomSideNote({
+                        chatId: this.activeChatId,
+                        messageId: anchor.messageId,
+                        blockIndex: anchor.blockIndex,
+                        quote,
+                    });
+                    if (threadId) this.focusSideNoteInput(threadId);
+                    return;
+                }
+                void this.runner.askSideNote({
+                    chatId: this.activeChatId,
+                    messageId: anchor.messageId,
+                    blockIndex: anchor.blockIndex,
+                    intent: action,
+                    quote,
+                    previousBlockText: anchor.previousBlockText,
+                });
+                return;
+            }
+
             if (this.runner.getState(this.activeChatId).busy) {
                 showMessage("Wait for the current response to finish or click Stop first.", 2500, "info");
                 return;
@@ -1628,10 +1689,352 @@ export class SidebarView {
                 relevance: `> "${quote}"\n\nI don't see the relevance of this statement—why does it matter here and how does it connect to our goal?`,
                 example: `> "${quote}"\n\nCan you give me a concrete example or intuition for this?`,
             };
-            const prompt = prompts[action ?? ""];
+            const prompt = prompts[action];
             if (!prompt) return;
 
             void this.runner.sendUserMessage(this.activeChatId, prompt);
+        });
+    }
+
+    // ─── Per-Block Hover Actions & Inline Side-Note Drawers ─────────────────────
+
+    private extractBlockLatexText(blockEl: HTMLElement): string {
+        const clone = blockEl.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll(".lh-block-actions, .lh-sidenote-slot").forEach((el) => el.remove());
+        clone.querySelectorAll(".katex").forEach((katexEl) => {
+            const ann = katexEl.querySelector('annotation[encoding="application/x-tex"]');
+            if (ann?.textContent) {
+                const isDisplay = Boolean(katexEl.closest(".lh-math-block, .katex-display"));
+                const tex = ann.textContent.trim();
+                katexEl.replaceWith(document.createTextNode(isDisplay ? `$$${tex}$$` : `$${tex}$`));
+            } else {
+                katexEl.querySelectorAll(".katex-mathml").forEach((m) => m.remove());
+            }
+        });
+        clone.querySelectorAll(".katex-mathml").forEach((m) => m.remove());
+        return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+    }
+
+    private findPreviousStepBlock(msgWrap: HTMLElement, blockIndex: number): HTMLElement | null {
+        if (blockIndex <= 0) return null;
+        return msgWrap.querySelector(`.lh-step-block[data-block-idx="${blockIndex - 1}"]`) as HTMLElement | null;
+    }
+
+    private decorateAssistantBlocks(transcriptEl: HTMLElement, chat: ChatRecord): void {
+        const sideNotes = chat.sideNotes ?? [];
+        const notesByKey = new Map<string, SideNoteThread[]>();
+        for (const sn of sideNotes) {
+            const key = `${sn.messageId}:${sn.blockIndex}`;
+            const list = notesByKey.get(key) ?? [];
+            list.push(sn);
+            notesByKey.set(key, list);
+        }
+
+        const assistantMsgs = transcriptEl.querySelectorAll<HTMLElement>(".lh-msg--assistant[data-msg-id]");
+        assistantMsgs.forEach((msgEl) => {
+            const messageId = msgEl.dataset.msgId;
+            if (!messageId) return;
+
+            const proseBlocks = msgEl.querySelectorAll<HTMLElement>(".lh-assistant-prose");
+            let blockIndex = 0;
+
+            proseBlocks.forEach((proseEl) => {
+                const candidates = Array.from(
+                    proseEl.querySelectorAll<HTMLElement>("p, li, .lh-math-block, blockquote"),
+                ).filter((el) => {
+                    // Avoid double-decorating elements nested inside another matched step block (e.g. <p> inside <li>)
+                    const parentMatch = el.parentElement?.closest("p, li, .lh-math-block, blockquote");
+                    if (parentMatch && proseEl.contains(parentMatch)) return false;
+                    // Skip tiny empty paragraphs
+                    if (!el.classList.contains("lh-math-block") && !(el.textContent ?? "").trim()) return false;
+                    return true;
+                });
+
+                for (const blockEl of candidates) {
+                    const idx = blockIndex++;
+                    blockEl.classList.add("lh-step-block");
+                    blockEl.dataset.blockIdx = String(idx);
+
+                    const actions = document.createElement("span");
+                    actions.className = "lh-block-actions";
+                    actions.setAttribute("contenteditable", "false");
+                    actions.innerHTML = `
+                        <button type="button" class="lh-block-actions__btn" data-block-action="explain" title="Don't follow — break this down">?</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="bridge" title="How does this follow from the previous step?">↳</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="relevance" title="Why does this matter here?">🎯</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="example" title="Give an example or intuition">💡</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="custom" title="Ask a custom question about this block">💬</button>
+                    `;
+                    blockEl.appendChild(actions);
+
+                    const anchored = notesByKey.get(`${messageId}:${idx}`);
+                    if (anchored && anchored.length > 0) {
+                        const slot = document.createElement("div");
+                        slot.className = "lh-sidenote-slot";
+                        slot.innerHTML = anchored.map((sn) => this.renderSideNoteHtml(sn)).join("\n");
+                        if (blockEl.tagName === "LI") {
+                            blockEl.appendChild(slot);
+                        } else {
+                            blockEl.insertAdjacentElement("afterend", slot);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    private renderSideNoteHtml(sn: SideNoteThread): string {
+        const stream = this.runner.getSideNoteStream(sn.id);
+        const intentLabels: Record<SideNoteIntent, string> = {
+            explain: "? Don't follow",
+            bridge: "↳ Why this follows",
+            relevance: "🎯 Why it matters",
+            example: "💡 Example",
+            custom: "💬 Side-note",
+        };
+        const badge = intentLabels[sn.intent] ?? "💬 Side-note";
+        const shortQuote = sn.quote.length > 68 ? `${sn.quote.slice(0, 65)}...` : sn.quote;
+        const replyCount = sn.entries.filter((e) => e.role === "assistant").length;
+
+        if (sn.collapsed && !stream?.busy) {
+            return `
+                <div class="lh-sidenote lh-sidenote--collapsed" data-sidenote-id="${escapeHtml(sn.id)}">
+                    <button type="button" class="lh-sidenote__pill" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Expand side-note">
+                        <span class="lh-sidenote__badge">${escapeHtml(badge)}</span>
+                        <span class="lh-sidenote__pill-quote">"${escapeHtml(shortQuote)}"</span>
+                        <span class="lh-sidenote__pill-count">${replyCount} ${replyCount === 1 ? "reply" : "replies"} ▸</span>
+                    </button>
+                    <button type="button" class="lh-sidenote__icon-btn" data-sidenote-delete="${escapeHtml(sn.id)}" title="Dismiss side-note">×</button>
+                </div>
+            `;
+        }
+
+        const entriesHtml = sn.entries
+            .map((entry, idx) => {
+                // Skip displaying the auto-generated first user prompt verbatim since the intent badge already shows it
+                if (idx === 0 && entry.role === "user" && sn.intent !== "custom") {
+                    return "";
+                }
+                if (entry.role === "user") {
+                    return `<div class="lh-sidenote__user">${escapeHtml(entry.text)}</div>`;
+                }
+                return `<div class="lh-sidenote__reply b3-typography">${renderMarkdown(entry.text)}</div>`;
+            })
+            .filter(Boolean)
+            .join("\n");
+
+        const streamHtml = stream
+            ? stream.error
+                ? `<div class="lh-sidenote__error">${escapeHtml(stream.error)}</div>`
+                : stream.text
+                  ? `<div class="lh-sidenote__reply lh-sidenote__reply--streaming b3-typography">${renderMarkdown(stream.text)}</div>`
+                  : `<div class="lh-sidenote__thinking">Thinking...</div>`
+            : "";
+
+        const hasBody = Boolean(entriesHtml || streamHtml);
+        const inputPlaceholder =
+            sn.entries.length === 0 ? "Ask anything about this step..." : "Ask a quick follow-up on this step...";
+
+        return `
+            <div class="lh-sidenote" data-sidenote-id="${escapeHtml(sn.id)}">
+                <div class="lh-sidenote__header">
+                    <button type="button" class="lh-sidenote__header-toggle" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Collapse side-note">
+                        <span class="lh-sidenote__badge">${escapeHtml(badge)}</span>
+                        <span class="lh-sidenote__quote">"${escapeHtml(shortQuote)}"</span>
+                        <span class="lh-sidenote__chev">▾</span>
+                    </button>
+                    <div class="lh-sidenote__header-actions">
+                        ${
+                            stream?.busy
+                                ? `<button type="button" class="lh-sidenote__mini-btn" data-sidenote-stop="${escapeHtml(sn.id)}" title="Stop generating">⏹ Stop</button>`
+                                : sn.entries.length > 0
+                                  ? `<button type="button" class="lh-sidenote__mini-btn" data-sidenote-promote="${escapeHtml(sn.id)}" title="Move this question to the main chat">→ Chat</button>`
+                                  : ""
+                        }
+                        <button type="button" class="lh-sidenote__icon-btn" data-sidenote-delete="${escapeHtml(sn.id)}" title="Dismiss side-note">×</button>
+                    </div>
+                </div>
+                <div class="lh-sidenote__body${hasBody ? "" : " fn__none"}">
+                    ${entriesHtml}
+                    <div class="lh-sidenote__stream">${streamHtml}</div>
+                </div>
+                <form class="lh-sidenote__form" data-sidenote-form="${escapeHtml(sn.id)}">
+                    <input type="text" class="lh-sidenote__input" placeholder="${inputPlaceholder}" ${
+                        stream?.busy ? "disabled" : ""
+                    } />
+                    <button type="submit" class="lh-sidenote__send" ${stream?.busy ? "disabled" : ""} title="Send question">↵</button>
+                </form>
+            </div>
+        `;
+    }
+
+    private focusSideNoteInput(threadId: string): void {
+        window.requestAnimationFrame(() => {
+            const input = this.streamEl.querySelector(
+                `.lh-sidenote[data-sidenote-id="${threadId}"] .lh-sidenote__input`,
+            ) as HTMLInputElement | null;
+            input?.focus();
+        });
+    }
+
+    private updateSideNoteInPlace(threadId: string): void {
+        const chat = this.getActiveChat();
+        if (!chat) return;
+        const thread = chat.sideNotes?.find((t) => t.id === threadId);
+        const existingEl = this.streamEl.querySelector(`.lh-sidenote[data-sidenote-id="${threadId}"]`) as HTMLElement | null;
+        if (!thread) {
+            existingEl?.remove();
+            return;
+        }
+        if (!existingEl) {
+            this.renderTranscript();
+            return;
+        }
+
+        const stream = this.runner.getSideNoteStream(threadId);
+        // While streaming tokens, update ONLY the streaming slot so we never disturb scroll or focus
+        if (stream?.busy) {
+            const streamSlot = existingEl.querySelector(".lh-sidenote__stream") as HTMLElement | null;
+            if (streamSlot) {
+                streamSlot.innerHTML = stream.text
+                    ? `<div class="lh-sidenote__reply lh-sidenote__reply--streaming b3-typography">${renderMarkdown(stream.text)}</div>`
+                    : `<div class="lh-sidenote__thinking">Thinking...</div>`;
+                this.syncScrollDownButton();
+                return;
+            }
+        }
+
+        // Settled or collapsed state changed: replace just this card
+        const tmp = document.createElement("div");
+        tmp.innerHTML = this.renderSideNoteHtml(thread).trim();
+        const replacement = tmp.firstElementChild;
+        if (replacement) {
+            existingEl.replaceWith(replacement);
+        }
+        this.syncScrollDownButton();
+    }
+
+    private bindSideNoteEvents(): void {
+        this.streamEl.addEventListener("click", (ev) => {
+            const target = ev.target as HTMLElement;
+
+            // 1. Block-level hover action buttons (?, ↳, 🎯, 💡)
+            const blockBtn = target.closest("[data-block-action]") as HTMLElement | null;
+            if (blockBtn) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (!this.activeChatId) return;
+                const intent = blockBtn.dataset.blockAction as SideNoteIntent | undefined;
+                const blockEl = blockBtn.closest(".lh-step-block") as HTMLElement | null;
+                const msgEl = blockBtn.closest(".lh-msg--assistant[data-msg-id]") as HTMLElement | null;
+                if (!intent || !blockEl || !msgEl?.dataset.msgId) return;
+
+                const blockIndex = Number(blockEl.dataset.blockIdx ?? "0");
+                const rawQuote = this.extractBlockLatexText(blockEl);
+                if (!rawQuote) return;
+                const quote = rawQuote.length > 420 ? `${rawQuote.slice(0, 417)}...` : rawQuote;
+
+                if (intent === "custom") {
+                    const threadId = this.runner.openCustomSideNote({
+                        chatId: this.activeChatId,
+                        messageId: msgEl.dataset.msgId,
+                        blockIndex: Number.isNaN(blockIndex) ? 0 : blockIndex,
+                        quote,
+                    });
+                    if (threadId) this.focusSideNoteInput(threadId);
+                    return;
+                }
+
+                const prevBlock = this.findPreviousStepBlock(msgEl, blockIndex);
+                const previousBlockText = prevBlock ? this.extractBlockLatexText(prevBlock) : undefined;
+
+                void this.runner.askSideNote({
+                    chatId: this.activeChatId,
+                    messageId: msgEl.dataset.msgId,
+                    blockIndex: Number.isNaN(blockIndex) ? 0 : blockIndex,
+                    intent,
+                    quote,
+                    previousBlockText,
+                });
+                return;
+            }
+
+            // 2. Collapse / expand side-note
+            const toggleBtn = target.closest("[data-sidenote-toggle]") as HTMLElement | null;
+            if (toggleBtn && this.activeChatId) {
+                ev.stopPropagation();
+                const threadId = toggleBtn.dataset.sidenoteToggle;
+                if (threadId) this.runner.toggleSideNoteCollapsed(this.activeChatId, threadId);
+                return;
+            }
+
+            // 3. Stop streaming side-note
+            const stopBtn = target.closest("[data-sidenote-stop]") as HTMLElement | null;
+            if (stopBtn) {
+                ev.stopPropagation();
+                const threadId = stopBtn.dataset.sidenoteStop;
+                if (threadId) this.runner.abortSideNote(threadId);
+                return;
+            }
+
+            // 4. Delete / dismiss side-note
+            const delBtn = target.closest("[data-sidenote-delete]") as HTMLElement | null;
+            if (delBtn && this.activeChatId) {
+                ev.stopPropagation();
+                const threadId = delBtn.dataset.sidenoteDelete;
+                if (threadId) this.runner.deleteSideNote(this.activeChatId, threadId);
+                return;
+            }
+
+            // 5. Promote side-note to main chat
+            const promoteBtn = target.closest("[data-sidenote-promote]") as HTMLElement | null;
+            if (promoteBtn && this.activeChatId) {
+                ev.stopPropagation();
+                const threadId = promoteBtn.dataset.sidenotePromote;
+                const chat = this.getActiveChat();
+                const sn = chat?.sideNotes?.find((t) => t.id === threadId);
+                if (!sn) return;
+                if (this.runner.getState(this.activeChatId).busy) {
+                    showMessage("Wait for the current response to finish or click Stop first.", 2500, "info");
+                    return;
+                }
+                const lastUserQ =
+                    [...sn.entries].reverse().find((e) => e.role === "user")?.text ??
+                    "Can we go deeper into this step in the main lesson?";
+                const prompt = `> "${sn.quote}"\n\n${lastUserQ}`;
+                void this.runner.sendUserMessage(this.activeChatId, prompt);
+                return;
+            }
+        });
+
+        // 6. Side-note follow-up form submit
+        this.streamEl.addEventListener("submit", (ev) => {
+            const form = (ev.target as HTMLElement).closest("[data-sidenote-form]") as HTMLFormElement | null;
+            if (!form || !this.activeChatId) return;
+            ev.preventDefault();
+            const threadId = form.dataset.sidenoteForm;
+            const input = form.querySelector(".lh-sidenote__input") as HTMLInputElement | null;
+            const text = input?.value.trim() ?? "";
+            if (!threadId || !text) return;
+
+            const chat = this.getActiveChat();
+            const sn = chat?.sideNotes?.find((t) => t.id === threadId);
+            if (!sn) return;
+
+            if (input) input.value = "";
+            const msgEl = form.closest(".lh-msg--assistant[data-msg-id]") as HTMLElement | null;
+            const prevBlock = msgEl ? this.findPreviousStepBlock(msgEl, sn.blockIndex) : null;
+            const previousBlockText = prevBlock ? this.extractBlockLatexText(prevBlock) : undefined;
+            void this.runner.askSideNote({
+                chatId: this.activeChatId,
+                messageId: sn.messageId,
+                blockIndex: sn.blockIndex,
+                intent: sn.intent,
+                quote: sn.quote,
+                previousBlockText,
+                customQuestion: text,
+                threadId: sn.id,
+            });
         });
     }
 }

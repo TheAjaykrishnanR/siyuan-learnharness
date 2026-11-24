@@ -15,6 +15,7 @@ import type {
     ExtractedProposition,
     LhMessage,
     SessionFindings,
+    SideNoteThread,
 } from "../core/contracts";
 import { batchRuns, coverageOf, messageViewLines, type CoverageSlot } from "../core/coverage";
 import {
@@ -288,6 +289,7 @@ async function runAuditorStage(
 function buildBatchSourceText(
     allMessages: readonly LhMessage[],
     batch: readonly CoverageSlot[],
+    sideNotes?: readonly SideNoteThread[],
 ): { sourceText: string; validMessageIds: Set<string> } {
     const validMessageIds = new Set<string>();
     const batchMsgIds = new Set(batch.map((s) => s.message.id));
@@ -314,6 +316,17 @@ function buildBatchSourceText(
         const msg = allMessages[i]!;
         if (msg.role === "assistant" && batchMsgIds.has(msg.id)) {
             lines.push(...messageViewLines(msg, msg.id));
+            if (sideNotes && sideNotes.length > 0) {
+                for (const sn of sideNotes) {
+                    if (sn.messageId !== msg.id) continue;
+                    const qPreview = sn.quote.slice(0, 160);
+                    const userQs = sn.entries
+                        .filter((e) => e.role === "user")
+                        .map((e) => e.text)
+                        .join(" | ");
+                    lines.push(`LEARNER SIDE-NOTE (${sn.intent}) on "${qPreview}": ${userQs}`);
+                }
+            }
         } else if (msg.role === "user" && msg.content.trim()) {
             lines.push(`LEARNER: ${msg.content.trim()}`);
         } else if (msg.role === "toolResult" && msg.details && typeof msg.details === "object") {
@@ -357,7 +370,7 @@ export async function extractFromChat(
     const totalStats: EmissionStats = { nodes: 0, chains: 0, droppedChains: 0 };
 
     for (const batch of runs) {
-        const { sourceText, validMessageIds } = buildBatchSourceText(chat.messages, batch);
+        const { sourceText, validMessageIds } = buildBatchSourceText(chat.messages, batch, chat.sideNotes);
         if (!sourceText.trim()) continue;
 
         const digest = buildDigestForSource(deps, chatId);

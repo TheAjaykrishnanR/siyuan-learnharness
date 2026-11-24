@@ -266,12 +266,32 @@ export interface ChatSettings {
     quizzingMechanic?: "quiz" | "explain";
 }
 
+export type SideNoteIntent = "explain" | "bridge" | "relevance" | "example" | "custom";
+
+export interface SideNoteEntry {
+    role: "user" | "assistant";
+    text: string;
+    timestamp: number;
+}
+
+export interface SideNoteThread {
+    id: string;
+    messageId: string;
+    blockIndex: number;
+    intent: SideNoteIntent;
+    quote: string;
+    entries: SideNoteEntry[];
+    collapsed?: boolean;
+    createdAt: number;
+}
+
 export interface ChatRecord {
     id: string;
     title: string;
     createdAt: string;
     updatedAt: string;
     messages: LhMessage[];
+    sideNotes?: SideNoteThread[];
     kind?: ChatKind;
     tree?: PlanTree;
     settings?: ChatSettings;

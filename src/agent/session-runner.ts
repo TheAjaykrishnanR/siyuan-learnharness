@@ -8,8 +8,11 @@ import {
     titleFromPrompt,
     type ChatRecord,
     type LhAssistantMessage,
+    type LhMessage,
     type LhToolResultMessage,
     type NoteImageAttachment,
+    type SideNoteIntent,
+    type SideNoteThread,
 } from "../core/contracts";
 import { getGraph, type GraphDeps } from "../core/graph";
 import {
@@ -64,11 +67,29 @@ export interface TurnStreamState {
     error: string | null;
 }
 
+export interface SideNoteStreamState {
+    chatId: string;
+    threadId: string;
+    busy: boolean;
+    text: string;
+    error: string | null;
+}
+
+const SIDENOTE_SYSTEM_PROMPT = `You are a concise, clear tutor answering an inline side-note clarification for a learner reading a lesson.
+Rules:
+- Focus strictly on the quoted statement/equation and the learner's specific confusion (breaking it down, showing how it follows from the previous step, explaining its relevance to the goal, or giving a concrete example/intuition).
+- Keep your reply compact and scannable (typically 2–6 short sentences or a brief derivation).
+- Use clean LaTeX: $...$ for inline math and $$...$$ on its own line for standalone equations.
+- Do not restart the lesson, do not add meta-commentary or filler greetings.`;
+
 export class SessionRunner {
     private deps: SessionRunnerDeps;
     private activeControllers = new Map<string, AbortController>();
     private states = new Map<string, TurnStreamState>();
     private listeners = new Set<(chatId: string) => void>();
+    private sideNoteControllers = new Map<string, AbortController>();
+    private sideNoteStreams = new Map<string, SideNoteStreamState>();
+    private sideNoteListeners = new Set<(chatId: string, threadId: string) => void>();
     private extractingChats = new Set<string>();
 
     constructor(deps: SessionRunnerDeps) {
@@ -78,6 +99,258 @@ export class SessionRunner {
     public subscribe(fn: (chatId: string) => void): () => void {
         this.listeners.add(fn);
         return () => this.listeners.delete(fn);
+    }
+
+    public subscribeSideNote(fn: (chatId: string, threadId: string) => void): () => void {
+        this.sideNoteListeners.add(fn);
+        return () => this.sideNoteListeners.delete(fn);
+    }
+
+    public getSideNoteStream(threadId: string): SideNoteStreamState | null {
+        return this.sideNoteStreams.get(threadId) ?? null;
+    }
+
+    private emitSideNote(chatId: string, threadId: string): void {
+        for (const fn of this.sideNoteListeners) fn(chatId, threadId);
+    }
+
+    public abortSideNote(threadId: string): void {
+        const ctrl = this.sideNoteControllers.get(threadId);
+        if (ctrl) {
+            ctrl.abort();
+            this.sideNoteControllers.delete(threadId);
+        }
+        const st = this.sideNoteStreams.get(threadId);
+        if (st) {
+            this.sideNoteStreams.delete(threadId);
+            this.emitSideNote(st.chatId, threadId);
+        }
+    }
+
+    public toggleSideNoteCollapsed(chatId: string, threadId: string): void {
+        const record = this.deps.chatStore.getChat(chatId);
+        if (!record?.sideNotes) return;
+        const thread = record.sideNotes.find((t) => t.id === threadId);
+        if (!thread) return;
+        thread.collapsed = !thread.collapsed;
+        this.deps.chatStore.saveChat(record);
+        this.emitSideNote(chatId, threadId);
+    }
+
+    public deleteSideNote(chatId: string, threadId: string): void {
+        this.abortSideNote(threadId);
+        const record = this.deps.chatStore.getChat(chatId);
+        if (!record?.sideNotes) return;
+        record.sideNotes = record.sideNotes.filter((t) => t.id !== threadId);
+        this.deps.chatStore.saveChat(record);
+        this.emit(chatId);
+    }
+
+    /** Create an empty inline side-note drawer anchored to a block so the learner can type a custom question. */
+    public openCustomSideNote(opts: {
+        chatId: string;
+        messageId: string;
+        blockIndex: number;
+        quote: string;
+    }): string {
+        const record = this.deps.chatStore.getChat(opts.chatId);
+        if (!record) return "";
+        if (!record.sideNotes) record.sideNotes = [];
+
+        const thread: SideNoteThread = {
+            id: `sn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            messageId: opts.messageId,
+            blockIndex: opts.blockIndex,
+            intent: "custom",
+            quote: opts.quote,
+            entries: [],
+            collapsed: false,
+            createdAt: Date.now(),
+        };
+        record.sideNotes.push(thread);
+        this.deps.chatStore.saveChat(record);
+        this.emit(opts.chatId);
+        return thread.id;
+    }
+
+    /** Run a non-polluting inline side-note clarification anchored to a specific message block. */
+    public async askSideNote(opts: {
+        chatId: string;
+        messageId: string;
+        blockIndex: number;
+        intent: SideNoteIntent;
+        quote: string;
+        previousBlockText?: string;
+        customQuestion?: string;
+        threadId?: string;
+    }): Promise<string> {
+        const record = this.deps.chatStore.getChat(opts.chatId);
+        if (!record) return "";
+
+        if (!record.sideNotes) record.sideNotes = [];
+
+        const intentQuestions: Record<SideNoteIntent, string> = {
+            explain: "I don't follow this statement. Break it down more simply.",
+            bridge: "I don't see how this follows from the previous step. Show the logical bridge.",
+            relevance: "Why does this statement matter here, and how does it connect to our goal?",
+            example: "Give me a concrete example or intuition for this.",
+            custom: opts.customQuestion?.trim() || "Can you clarify this?",
+        };
+
+        const userQuestion = opts.customQuestion?.trim() || intentQuestions[opts.intent];
+
+        let thread: SideNoteThread | undefined;
+        if (opts.threadId) {
+            thread = record.sideNotes.find((t) => t.id === opts.threadId);
+        }
+        if (!thread) {
+            thread = {
+                id: `sn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                messageId: opts.messageId,
+                blockIndex: opts.blockIndex,
+                intent: opts.intent,
+                quote: opts.quote,
+                entries: [],
+                collapsed: false,
+                createdAt: Date.now(),
+            };
+            record.sideNotes.push(thread);
+        } else {
+            thread.collapsed = false;
+        }
+
+        thread.entries.push({
+            role: "user",
+            text: userQuestion,
+            timestamp: Date.now(),
+        });
+        this.deps.chatStore.saveChat(record);
+
+        const threadId = thread.id;
+        // Abort any in-flight stream on this same thread
+        this.sideNoteControllers.get(threadId)?.abort();
+        const ctrl = new AbortController();
+        this.sideNoteControllers.set(threadId, ctrl);
+        this.sideNoteStreams.set(threadId, {
+            chatId: opts.chatId,
+            threadId,
+            busy: true,
+            text: "",
+            error: null,
+        });
+        this.emit(opts.chatId);
+        this.emitSideNote(opts.chatId, threadId);
+
+        // Build compact lesson context around the anchor message
+        const anchorIdx = record.messages.findIndex((m) => m.id === opts.messageId);
+        const contextSlice =
+            anchorIdx >= 0
+                ? record.messages.slice(Math.max(0, anchorIdx - 3), anchorIdx + 1)
+                : record.messages.slice(-4);
+        const contextLines: string[] = [];
+        for (const m of contextSlice) {
+            if (m.role === "user" && m.content.trim()) {
+                contextLines.push(`LEARNER: ${m.content.trim().slice(0, 600)}`);
+            } else if (m.role === "assistant") {
+                const txt = m.content
+                    .filter((b) => b.type === "text")
+                    .map((b) => (b.type === "text" ? b.text : ""))
+                    .join("\n")
+                    .trim();
+                if (txt) contextLines.push(`TEACHER: ${txt.slice(0, 2400)}`);
+            }
+        }
+
+        const wireHistory: LhMessage[] = [];
+        const introParts = [
+            contextLines.length > 0 ? `LESSON CONTEXT:\n${contextLines.join("\n\n")}` : "",
+            opts.previousBlockText ? `PREVIOUS STEP:\n${opts.previousBlockText}` : "",
+            `TARGET STATEMENT / EQUATION:\n> ${thread.quote}`,
+        ].filter(Boolean);
+
+        // First turn combines context + first question; subsequent turns follow naturally
+        for (let i = 0; i < thread.entries.length; i++) {
+            const entry = thread.entries[i]!;
+            if (entry.role === "user") {
+                const body =
+                    i === 0 ? `${introParts.join("\n\n")}\n\nLEARNER QUESTION:\n${entry.text}` : entry.text;
+                wireHistory.push(newUserMessage(body));
+            } else {
+                wireHistory.push({
+                    id: newMessageId(),
+                    role: "assistant",
+                    content: [{ type: "text", text: entry.text }],
+                    timestamp: entry.timestamp,
+                });
+            }
+        }
+
+        try {
+            const settings = this.deps.settingsStore.get();
+            const config = resolveModelConfig(settings, record.settings);
+            const replyMsg = await streamModelStep({
+                config,
+                systemPrompt: SIDENOTE_SYSTEM_PROMPT,
+                messages: wireHistory,
+                tools: {},
+                callbacks: {
+                    signal: ctrl.signal,
+                    onPartialUpdate: (partial) => {
+                        if (ctrl.signal.aborted) return;
+                        const text = partial.content
+                            .filter((b) => b.type === "text")
+                            .map((b) => (b.type === "text" ? b.text : ""))
+                            .join("");
+                        this.sideNoteStreams.set(threadId, {
+                            chatId: opts.chatId,
+                            threadId,
+                            busy: true,
+                            text,
+                            error: null,
+                        });
+                        this.emitSideNote(opts.chatId, threadId);
+                    },
+                },
+            });
+
+            if (ctrl.signal.aborted) return threadId;
+
+            const finalText = replyMsg.content
+                .filter((b) => b.type === "text")
+                .map((b) => (b.type === "text" ? b.text : ""))
+                .join("")
+                .trim();
+
+            const fresh = this.deps.chatStore.getChat(opts.chatId);
+            const freshThread = fresh?.sideNotes?.find((t) => t.id === threadId);
+            if (fresh && freshThread && finalText) {
+                freshThread.entries.push({
+                    role: "assistant",
+                    text: finalText,
+                    timestamp: Date.now(),
+                });
+                this.deps.chatStore.saveChat(fresh);
+            }
+            this.sideNoteStreams.delete(threadId);
+            this.emitSideNote(opts.chatId, threadId);
+        } catch (err: any) {
+            if (!ctrl.signal.aborted && err?.name !== "AbortError") {
+                this.sideNoteStreams.set(threadId, {
+                    chatId: opts.chatId,
+                    threadId,
+                    busy: false,
+                    text: "",
+                    error: err?.message ?? String(err),
+                });
+                this.emitSideNote(opts.chatId, threadId);
+            }
+        } finally {
+            if (this.sideNoteControllers.get(threadId) === ctrl) {
+                this.sideNoteControllers.delete(threadId);
+            }
+        }
+
+        return threadId;
     }
 
     public getState(chatId: string): TurnStreamState {
