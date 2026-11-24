@@ -76,11 +76,16 @@ export class SidebarView {
     private sessionMenuEl!: HTMLElement;
     private sessionListEl!: HTMLElement;
     private boundDocClickListener?: (e: MouseEvent) => void;
+    private boundSelectionChangeListener?: () => void;
+    private boundDocMouseDownListener?: (e: MouseEvent) => void;
+    private selectionBarEl!: HTMLElement;
+    private currentSelectionQuote = "";
     private graphBtnEl!: HTMLElement;
     private planStripEl!: HTMLElement;
     private chatBodyEl!: HTMLElement;
     private graphBodyEl!: HTMLElement;
     private streamEl!: HTMLElement;
+    private scrollBottomBtnEl!: HTMLElement;
     private streamingSlotEl!: HTMLElement;
     private questionSlotEl!: HTMLElement;
     private blockInputContainerEl!: HTMLElement;
@@ -141,6 +146,12 @@ export class SidebarView {
         this.unsubRunner?.();
         if (this.boundDocClickListener) {
             document.removeEventListener("click", this.boundDocClickListener);
+        }
+        if (this.boundSelectionChangeListener) {
+            document.removeEventListener("selectionchange", this.boundSelectionChangeListener);
+        }
+        if (this.boundDocMouseDownListener) {
+            document.removeEventListener("mousedown", this.boundDocMouseDownListener);
         }
         this.blockInput?.destroy();
         this.graphView?.destroy();
@@ -244,16 +255,27 @@ export class SidebarView {
                 <div class="lh-plan-strip" style="display:none;"></div>
 
                 <div class="lh-chat-main">
-                    <div class="lh-chat-stream">
-                        <div class="lh-transcript"></div>
-                        <div class="lh-streaming-slot"></div>
-                        <div class="lh-question-slot"></div>
+                    <div class="lh-chat-stream-wrap">
+                        <div class="lh-chat-stream">
+                            <div class="lh-transcript"></div>
+                            <div class="lh-streaming-slot"></div>
+                            <div class="lh-question-slot"></div>
+                        </div>
+                        <button type="button" class="lh-scroll-bottom-btn fn__none" data-action="scroll-to-bottom" title="Scroll to bottom" aria-label="Scroll to bottom">
+                            <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M8 2.5a.75.75 0 0 1 .75.75v7.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 8 2.5z"/></svg>
+                        </button>
                     </div>
 
                     <div class="lh-composer-host"></div>
                 </div>
 
                 <div class="lh-graph-drawer" style="display:none;"></div>
+                <div class="lh-selection-bar fn__none" role="toolbar" aria-label="Ask about selected text">
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="explain" title="Break down this statement">? Don't follow</button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="bridge" title="Explain how this follows from the previous step">↳ Why this follows</button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="relevance" title="Explain why this matters to the goal">🎯 Why it matters</button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="example" title="Give a concrete example or intuition">💡 Example</button>
+                </div>
             </div>
         `;
 
@@ -261,11 +283,13 @@ export class SidebarView {
         this.sessionTitleEl = this.rootElement.querySelector(".lh-session-dropdown__active-title") as HTMLElement;
         this.sessionMenuEl = this.rootElement.querySelector(".lh-session-dropdown__menu") as HTMLElement;
         this.sessionListEl = this.rootElement.querySelector(".lh-session-dropdown__list") as HTMLElement;
+        this.selectionBarEl = this.rootElement.querySelector(".lh-selection-bar") as HTMLElement;
         this.graphBtnEl = this.rootElement.querySelector(".lh-graph-toggle-btn") as HTMLElement;
         this.planStripEl = this.rootElement.querySelector(".lh-plan-strip") as HTMLElement;
         this.chatBodyEl = this.rootElement.querySelector(".lh-chat-main") as HTMLElement;
         this.graphBodyEl = this.rootElement.querySelector(".lh-graph-drawer") as HTMLElement;
         this.streamEl = this.rootElement.querySelector(".lh-chat-stream") as HTMLElement;
+        this.scrollBottomBtnEl = this.rootElement.querySelector(".lh-scroll-bottom-btn") as HTMLElement;
         this.streamingSlotEl = this.rootElement.querySelector(".lh-streaming-slot") as HTMLElement;
         this.questionSlotEl = this.rootElement.querySelector(".lh-question-slot") as HTMLElement;
         this.blockInputContainerEl = this.rootElement.querySelector(".lh-composer-host") as HTMLElement;
@@ -696,6 +720,7 @@ export class SidebarView {
         }
 
         transcriptEl.innerHTML = blocksHtml.join("\n");
+        this.syncScrollDownButton();
     }
 
     private renderAssistantMessage(
@@ -884,7 +909,7 @@ export class SidebarView {
         }
 
         this.streamingSlotEl.innerHTML = `<div class="lh-msg lh-msg--assistant">${parts.join("\n")}</div>`;
-        this.streamEl.scrollTop = this.streamEl.scrollHeight;
+        this.syncScrollDownButton();
     }
 
     private renderQuestionCard(): void {
@@ -1023,7 +1048,7 @@ export class SidebarView {
                 draft.otherText = otherEl.value;
                 draft.otherSelected = true;
             });
-            this.streamEl.scrollTop = this.streamEl.scrollHeight;
+            this.syncScrollDownButton();
             return;
         }
 
@@ -1363,7 +1388,250 @@ export class SidebarView {
                 if (this.activeChatId) this.runner.dismissActiveProblem(this.activeChatId);
             } else if (action === "next-problem") {
                 if (this.activeChatId) void this.runner.requestNextProblem(this.activeChatId);
+            } else if (action === "scroll-to-bottom") {
+                if (this.streamEl) {
+                    this.streamEl.scrollTop = this.streamEl.scrollHeight;
+                    this.syncScrollDownButton();
+                }
             }
+        });
+
+        this.bindSelectionBarEvents();
+        this.bindLatexCopyHandler();
+    }
+
+    private syncScrollDownButton(): void {
+        if (!this.streamEl || !this.scrollBottomBtnEl) return;
+        const distanceFromBottom =
+            this.streamEl.scrollHeight - this.streamEl.scrollTop - this.streamEl.clientHeight;
+        if (distanceFromBottom > 32) {
+            this.scrollBottomBtnEl.classList.remove("fn__none");
+        } else {
+            this.scrollBottomBtnEl.classList.add("fn__none");
+        }
+    }
+
+    private hideSelectionBar(): void {
+        this.currentSelectionQuote = "";
+        this.selectionBarEl?.classList.add("fn__none");
+    }
+
+    private extractLatexAwareText(range: Range, preserveNewlines: boolean): { text: string; hasMath: boolean } {
+        const ancestorEl =
+            range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+                ? (range.commonAncestorContainer as HTMLElement)
+                : range.commonAncestorContainer.parentElement;
+
+        // Case 1: Entire selection is inside a single rendered KaTeX equation
+        const enclosingKatex = ancestorEl?.closest(".katex");
+        if (enclosingKatex) {
+            const ann = enclosingKatex.querySelector('annotation[encoding="application/x-tex"]');
+            if (ann?.textContent) {
+                const isDisplay = Boolean(enclosingKatex.closest(".lh-math-block, .katex-display"));
+                const tex = ann.textContent.trim();
+                return { text: isDisplay ? `$$${tex}$$` : `$${tex}$`, hasMath: true };
+            }
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.appendChild(range.cloneContents());
+
+        let hasMath = false;
+        wrapper.querySelectorAll(".katex").forEach((katexEl) => {
+            const ann = katexEl.querySelector('annotation[encoding="application/x-tex"]');
+            if (ann?.textContent) {
+                hasMath = true;
+                const isDisplay = Boolean(katexEl.closest(".lh-math-block, .katex-display"));
+                const tex = ann.textContent.trim();
+                katexEl.replaceWith(document.createTextNode(isDisplay ? `$$${tex}$$` : `$${tex}$`));
+            } else {
+                katexEl.querySelectorAll(".katex-mathml").forEach((m) => m.remove());
+            }
+        });
+        wrapper.querySelectorAll(".katex-mathml").forEach((m) => m.remove());
+
+        if (!preserveNewlines) {
+            return { text: (wrapper.textContent ?? "").replace(/\s+/g, " ").trim(), hasMath };
+        }
+
+        // Preserve paragraph/block line breaks when copying to clipboard
+        const chunks: string[] = [];
+        const blockTags = new Set(["P", "DIV", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "PRE", "BLOCKQUOTE", "TR"]);
+        const walk = (node: Node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                chunks.push(node.textContent ?? "");
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE) return;
+            const el = node as HTMLElement;
+            if (el.tagName === "BR") {
+                chunks.push("\n");
+                return;
+            }
+            const isBlock = blockTags.has(el.tagName);
+            if (isBlock && chunks.length > 0 && !chunks[chunks.length - 1]!.endsWith("\n")) {
+                chunks.push("\n");
+            }
+            for (const child of Array.from(el.childNodes)) {
+                walk(child);
+            }
+            if (isBlock && chunks.length > 0 && !chunks[chunks.length - 1]!.endsWith("\n")) {
+                chunks.push("\n");
+            }
+        };
+        walk(wrapper);
+        const text = chunks
+            .join("")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        return { text, hasMath };
+    }
+
+    private extractCleanSelectionText(range: Range): string {
+        return this.extractLatexAwareText(range, false).text;
+    }
+
+    private bindLatexCopyHandler(): void {
+        this.streamEl.addEventListener("copy", (ev: ClipboardEvent) => {
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !ev.clipboardData) return;
+            const range = sel.getRangeAt(0);
+            const ancestorEl =
+                range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+                    ? (range.commonAncestorContainer as HTMLElement)
+                    : range.commonAncestorContainer.parentElement;
+            if (!ancestorEl || !this.streamEl.contains(ancestorEl)) return;
+
+            const { text, hasMath } = this.extractLatexAwareText(range, true);
+            if (!hasMath || !text) return;
+
+            ev.preventDefault();
+            ev.clipboardData.setData("text/plain", text);
+        });
+    }
+
+    private updateSelectionBar(): void {
+        if (this.showGraphOverlay || !this.streamEl || !this.selectionBarEl) {
+            this.hideSelectionBar();
+            return;
+        }
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+            this.hideSelectionBar();
+            return;
+        }
+
+        const range = sel.getRangeAt(0);
+        const anchorEl =
+            range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+                ? (range.commonAncestorContainer as HTMLElement)
+                : range.commonAncestorContainer.parentElement;
+
+        if (!anchorEl || !this.streamEl.contains(anchorEl)) {
+            this.hideSelectionBar();
+            return;
+        }
+
+        // Only show on teacher/assistant prose or question statements
+        const insideTeachable = anchorEl.closest(
+            ".lh-assistant-prose, .lh-question-card__q, .lh-qa-history__q, .lh-qa-history__exp",
+        );
+        if (!insideTeachable) {
+            this.hideSelectionBar();
+            return;
+        }
+
+        const quote = this.extractCleanSelectionText(range);
+        if (quote.length < 2) {
+            this.hideSelectionBar();
+            return;
+        }
+
+        const rect = range.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+            this.hideSelectionBar();
+            return;
+        }
+
+        this.currentSelectionQuote = quote.length > 420 ? `${quote.slice(0, 417)}...` : quote;
+        this.selectionBarEl.classList.remove("fn__none");
+
+        // Measure and position cleanly above (or below if near top) clamped to viewport
+        const barRect = this.selectionBarEl.getBoundingClientRect();
+        const pad = 8;
+        let left = rect.left + rect.width / 2 - barRect.width / 2;
+        left = Math.max(pad, Math.min(left, window.innerWidth - barRect.width - pad));
+
+        let top = rect.top - barRect.height - 8;
+        if (top < pad) {
+            top = rect.bottom + 8;
+        }
+        top = Math.max(pad, Math.min(top, window.innerHeight - barRect.height - pad));
+
+        this.selectionBarEl.style.left = `${Math.round(left)}px`;
+        this.selectionBarEl.style.top = `${Math.round(top)}px`;
+    }
+
+    private bindSelectionBarEvents(): void {
+        const scheduleUpdate = () => {
+            window.setTimeout(() => this.updateSelectionBar(), 10);
+        };
+
+        this.streamEl.addEventListener("mouseup", scheduleUpdate);
+        this.streamEl.addEventListener("keyup", scheduleUpdate);
+        this.streamEl.addEventListener(
+            "scroll",
+            () => {
+                this.hideSelectionBar();
+                this.syncScrollDownButton();
+            },
+            { passive: true },
+        );
+
+        this.boundSelectionChangeListener = () => {
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed) {
+                this.hideSelectionBar();
+            }
+        };
+        document.addEventListener("selectionchange", this.boundSelectionChangeListener);
+
+        this.boundDocMouseDownListener = (ev: MouseEvent) => {
+            if (this.selectionBarEl && !this.selectionBarEl.contains(ev.target as Node)) {
+                this.hideSelectionBar();
+            }
+        };
+        document.addEventListener("mousedown", this.boundDocMouseDownListener);
+
+        // Keep selection intact when clicking a toolbar button
+        this.selectionBarEl.addEventListener("mousedown", (ev) => {
+            ev.preventDefault();
+        });
+
+        this.selectionBarEl.addEventListener("click", (ev) => {
+            const btn = (ev.target as HTMLElement).closest("[data-sel-action]") as HTMLElement | null;
+            if (!btn) return;
+            const action = btn.dataset.selAction;
+            const quote = this.currentSelectionQuote;
+            this.hideSelectionBar();
+            window.getSelection()?.removeAllRanges();
+
+            if (!quote || !this.activeChatId) return;
+            if (this.runner.getState(this.activeChatId).busy) {
+                showMessage("Wait for the current response to finish or click Stop first.", 2500, "info");
+                return;
+            }
+
+            const prompts: Record<string, string> = {
+                explain: `> "${quote}"\n\nI don't follow this statement. Can you break it down more simply?`,
+                bridge: `> "${quote}"\n\nI don't see how this follows from the previous step. Can you show the logical bridge?`,
+                relevance: `> "${quote}"\n\nI don't see the relevance of this statement—why does it matter here and how does it connect to our goal?`,
+                example: `> "${quote}"\n\nCan you give me a concrete example or intuition for this?`,
+            };
+            const prompt = prompts[action ?? ""];
+            if (!prompt) return;
+
+            void this.runner.sendUserMessage(this.activeChatId, prompt);
         });
     }
 }
