@@ -7,13 +7,17 @@
  */
 
 import {
-    Atom,
-    Brain,
+    BookOpen,
+    Check,
+    ChevronDown,
     createElement,
-    Image,
+    Dumbbell,
+    ListChecks,
+    MessageSquareText,
     Mic,
+    Paperclip,
     Send,
-    ShieldCheck,
+    Settings,
     Square,
 } from "lucide";
 import { Protyle, showMessage, type App } from "siyuan";
@@ -56,55 +60,32 @@ export interface SiYuanBlockInputOptions {
 
 // Official Lucide icons rendered directly via Lucide's createElement
 // Enforce fill: none !important so SiYuan theme CSS doesn't accidentally fill outline strokes
-const PAPER_PLANE_SVG = createElement(Send, {
-    width: 15,
-    height: 15,
-    "stroke-width": 1.75,
+const svgOpts = (size = 15) => ({
+    width: size,
+    height: size,
+    "stroke-width": 1.8,
     style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
+});
+
+const PAPER_PLANE_SVG = createElement(Send, svgOpts(14)).outerHTML;
 
 const STOP_SQUARE_SVG = createElement(Square, {
-    width: 14,
-    height: 14,
-    "stroke-width": 1.75,
+    width: 12,
+    height: 12,
+    "stroke-width": 1.8,
     fill: "currentColor",
     style: "fill: currentColor !important; stroke: none !important;",
 }).outerHTML;
 
-const NOTE_LINK_SVG = createElement(Image, {
-    width: 15,
-    height: 15,
-    "stroke-width": 1.75,
-    style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
-
-const SHIELD_ICON_SVG = createElement(ShieldCheck, {
-    width: 14,
-    height: 14,
-    "stroke-width": 1.75,
-    style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
-
-const ATOM_ICON_SVG = createElement(Atom, {
-    width: 14,
-    height: 14,
-    "stroke-width": 1.75,
-    style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
-
-const BRAIN_ICON_SVG = createElement(Brain, {
-    width: 14,
-    height: 14,
-    "stroke-width": 1.75,
-    style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
-
-const MIC_ICON_SVG = createElement(Mic, {
-    width: 15,
-    height: 15,
-    "stroke-width": 1.75,
-    style: "fill: none !important; stroke: currentColor !important;",
-}).outerHTML;
+const NOTE_LINK_SVG = createElement(Paperclip, svgOpts(15)).outerHTML;
+const TEACH_ICON_SVG = createElement(BookOpen, svgOpts(15)).outerHTML;
+const PRACTICE_ICON_SVG = createElement(Dumbbell, svgOpts(15)).outerHTML;
+const QUIZ_ICON_SVG = createElement(ListChecks, svgOpts(15)).outerHTML;
+const EXPLAIN_ICON_SVG = createElement(MessageSquareText, svgOpts(15)).outerHTML;
+const MIC_ICON_SVG = createElement(Mic, svgOpts(15)).outerHTML;
+const CHEVRON_DOWN_SVG = createElement(ChevronDown, svgOpts(12)).outerHTML;
+const CHECK_SVG = createElement(Check, svgOpts(13)).outerHTML;
+const SETTINGS_SVG = createElement(Settings, svgOpts(13)).outerHTML;
 
 export class SiYuanBlockInput {
     private container: HTMLElement;
@@ -114,9 +95,10 @@ export class SiYuanBlockInput {
 
     private cardEl!: HTMLElement;
     private protyleHostEl!: HTMLElement;
-    private modePillTextEl!: HTMLElement;
+    private modeBtnEl!: HTMLButtonElement;
+    private modelBtnEl!: HTMLButtonElement;
     private modelPillTextEl!: HTMLElement;
-    private mechanicPillTextEl!: HTMLElement;
+    private mechanicBtnEl!: HTMLButtonElement;
     private modelMenuEl!: HTMLElement;
     private micBtnEl!: HTMLButtonElement;
     private voiceBarEl!: HTMLElement;
@@ -126,6 +108,7 @@ export class SiYuanBlockInput {
     private liveVoicePrefix = "";
     private actionBtnEl!: HTMLButtonElement;
     private boundDocClick: ((e: MouseEvent) => void) | null = null;
+    private boundDocKeydown: ((e: KeyboardEvent) => void) | null = null;
 
     constructor(container: HTMLElement, opts: SiYuanBlockInputOptions) {
         this.container = container;
@@ -137,6 +120,10 @@ export class SiYuanBlockInput {
         if (this.boundDocClick) {
             document.removeEventListener("click", this.boundDocClick);
             this.boundDocClick = null;
+        }
+        if (this.boundDocKeydown) {
+            document.removeEventListener("keydown", this.boundDocKeydown);
+            this.boundDocKeydown = null;
         }
         try {
             this.protyleInstance?.destroy();
@@ -184,25 +171,24 @@ export class SiYuanBlockInput {
             </div>
             <div class="lh-composer-card__footer">
                 <div class="lh-composer-card__left">
-                    <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-note" title="Insert active SiYuan note into textbox">
+                    <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-note" title="Attach active SiYuan note">
                         ${NOTE_LINK_SVG}
                     </button>
-                    <button class="lh-composer-icon-btn lh-mic-btn" type="button" data-composer-action="toggle-mic" title="Voice input (local WASM)">
+                    <button class="lh-composer-icon-btn lh-mic-btn" type="button" data-composer-action="toggle-mic" title="Voice input (local)">
                         ${MIC_ICON_SVG}
                     </button>
-                    <button class="lh-composer-pill" type="button" data-composer-action="toggle-mode" title="Click to switch between Teaching and Practice mode">
-                        ${SHIELD_ICON_SVG}
-                        <span class="lh-pill-mode-text">${escapeHtml(pills.modeLabel)}</span>
+                    <span class="lh-composer-sep" aria-hidden="true"></span>
+                    <button class="lh-composer-icon-btn lh-mode-btn" type="button" data-composer-action="toggle-mode" title="Mode: ${escapeHtml(pills.modeLabel)} (click to switch)">
+                        ${TEACH_ICON_SVG}
+                    </button>
+                    <button class="lh-composer-icon-btn lh-mechanic-btn" type="button" data-composer-action="toggle-mechanic" title="Quizzing: ${escapeHtml(pills.mechanicLabel)} (click to toggle)">
+                        ${QUIZ_ICON_SVG}
                     </button>
                 </div>
                 <div class="lh-composer-card__right">
-                    <button class="lh-composer-pill" type="button" data-composer-action="cycle-model" title="Click to choose LLM provider & model">
-                        ${ATOM_ICON_SVG}
+                    <button class="lh-model-trigger" type="button" data-composer-action="cycle-model" title="Choose model">
                         <span class="lh-pill-model-text">${escapeHtml(pills.modelLabel)}</span>
-                    </button>
-                    <button class="lh-composer-pill" type="button" data-composer-action="toggle-mechanic" title="Click to toggle Multiple-Choice (Quiz) vs Free-Recall (Explain)">
-                        ${BRAIN_ICON_SVG}
-                        <span class="lh-pill-mechanic-text">${escapeHtml(pills.mechanicLabel)}</span>
+                        <span class="lh-model-trigger__chev">${CHEVRON_DOWN_SVG}</span>
                     </button>
                     <button class="lh-send-plane-btn lh-send-plane-btn--empty" type="button" title="Send (Enter)">
                         ${PAPER_PLANE_SVG}
@@ -221,11 +207,13 @@ export class SiYuanBlockInput {
         this.voiceBarEl = this.cardEl.querySelector(".lh-voice-bar") as HTMLElement;
         this.voiceCanvasEl = this.cardEl.querySelector(".lh-voice-waveform") as HTMLCanvasElement;
         this.voiceStatusEl = this.cardEl.querySelector(".lh-voice-status") as HTMLElement;
-        this.modePillTextEl = this.cardEl.querySelector(".lh-pill-mode-text") as HTMLElement;
+        this.modeBtnEl = this.cardEl.querySelector(".lh-mode-btn") as HTMLButtonElement;
+        this.mechanicBtnEl = this.cardEl.querySelector(".lh-mechanic-btn") as HTMLButtonElement;
+        this.modelBtnEl = this.cardEl.querySelector(".lh-model-trigger") as HTMLButtonElement;
         this.modelPillTextEl = this.cardEl.querySelector(".lh-pill-model-text") as HTMLElement;
-        this.mechanicPillTextEl = this.cardEl.querySelector(".lh-pill-mechanic-text") as HTMLElement;
         this.actionBtnEl = this.cardEl.querySelector(".lh-send-plane-btn") as HTMLButtonElement;
 
+        this.refreshPills();
         this.initProtyle();
         this.syncBackgroundGridFromWorkspace();
         this.bindEvents();
@@ -234,9 +222,26 @@ export class SiYuanBlockInput {
     public refreshPills(): void {
         const pills = this.opts.getPillsState?.();
         if (!pills) return;
-        if (this.modePillTextEl) this.modePillTextEl.textContent = pills.modeLabel;
-        if (this.modelPillTextEl) this.modelPillTextEl.textContent = pills.modelLabel;
-        if (this.mechanicPillTextEl) this.mechanicPillTextEl.textContent = pills.mechanicLabel;
+        const isPractice = pills.modeLabel.toLowerCase().includes("practice");
+        const isExplain = pills.mechanicLabel.toLowerCase().includes("explain");
+
+        if (this.modeBtnEl) {
+            this.modeBtnEl.innerHTML = isPractice ? PRACTICE_ICON_SVG : TEACH_ICON_SVG;
+            this.modeBtnEl.classList.toggle("lh-composer-icon-btn--active", isPractice);
+            this.modeBtnEl.title = isPractice
+                ? "Practice Mode (click to switch to Teach)"
+                : "Teach Mode (click to switch to Practice)";
+        }
+        if (this.mechanicBtnEl) {
+            this.mechanicBtnEl.innerHTML = isExplain ? EXPLAIN_ICON_SVG : QUIZ_ICON_SVG;
+            this.mechanicBtnEl.classList.toggle("lh-composer-icon-btn--active", isExplain);
+            this.mechanicBtnEl.title = isExplain
+                ? "Free-Recall / Explain (click to switch to Quiz)"
+                : "Multiple-Choice Quiz (click to switch to Explain)";
+        }
+        if (this.modelPillTextEl) {
+            this.modelPillTextEl.textContent = pills.modelLabel;
+        }
     }
 
     /**
@@ -622,6 +627,7 @@ export class SiYuanBlockInput {
 
     private closeModelMenu(): void {
         this.modelMenuEl?.classList.add("fn__none");
+        this.modelBtnEl?.classList.remove("lh-model-trigger--open");
     }
 
     private toggleModelMenu(): void {
@@ -649,8 +655,8 @@ export class SiYuanBlockInput {
                             <button type="button" class="lh-model-menu__item ${
                                 isActive ? "lh-model-menu__item--active" : ""
                             }" data-model-provider="${escapeHtml(g.providerId)}" data-model-id="${escapeHtml(m)}">
-                                <span class="lh-model-menu__check">${isActive ? "✓" : ""}</span>
                                 <span class="lh-model-menu__name">${escapeHtml(m)}</span>
+                                <span class="lh-model-menu__check">${isActive ? CHECK_SVG : ""}</span>
                             </button>
                         `;
                         })
@@ -665,10 +671,11 @@ export class SiYuanBlockInput {
                 ${groupsHtml || `<div class="lh-model-menu__empty">No models configured yet.</div>`}
             </div>
             <div class="lh-model-menu__footer">
-                <button type="button" class="lh-model-menu__config-btn" data-model-action="open-settings">⚙ Configure Providers &amp; Models...</button>
+                <button type="button" class="lh-model-menu__config-btn" data-model-action="open-settings">${SETTINGS_SVG}<span>Configure providers</span></button>
             </div>
         `;
         this.modelMenuEl.classList.remove("fn__none");
+        this.modelBtnEl?.classList.add("lh-model-trigger--open");
     }
 
     private bindEvents(): void {
@@ -678,6 +685,15 @@ export class SiYuanBlockInput {
             }
         };
         document.addEventListener("click", this.boundDocClick);
+
+        this.boundDocKeydown = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && !this.modelMenuEl.classList.contains("fn__none")) {
+                e.preventDefault();
+                e.stopPropagation();
+                this.closeModelMenu();
+            }
+        };
+        document.addEventListener("keydown", this.boundDocKeydown);
 
         this.modelMenuEl.addEventListener("click", (e) => {
             const target = e.target as HTMLElement;

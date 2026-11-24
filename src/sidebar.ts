@@ -45,6 +45,19 @@ import { localStt } from "./ui/local-stt";
 import { escapeHtml, renderMarkdown } from "./ui/markdown";
 import { SiYuanBlockInput, type ModelPickerGroup } from "./ui/siyuan-block-input";
 
+const ICON = {
+    help: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 5 .8c0 1.7-2.5 2-2.5 3.7"/><circle cx="12" cy="17.2" r="0.7" fill="currentColor"/></svg>`,
+    bridge: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>`,
+    target: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg>`,
+    spark: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>`,
+    ask: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/></svg>`,
+    plan: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6h5a3 3 0 0 1 0 6h-3a3 3 0 0 0 0 6h5"/></svg>`,
+    search: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
+    orb: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="22" height="22"><path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/></svg>`,
+    chat: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+    mic: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>`,
+};
+
 export interface SidebarCallbacks {
     app: App;
     onOpenSettings: () => void;
@@ -78,6 +91,7 @@ export class SidebarView {
     private sessionMenuEl!: HTMLElement;
     private sessionListEl!: HTMLElement;
     private boundDocClickListener?: (e: MouseEvent) => void;
+    private boundDocKeydownListener?: (e: KeyboardEvent) => void;
     private boundSelectionChangeListener?: () => void;
     private boundDocMouseDownListener?: (e: MouseEvent) => void;
     private selectionBarEl!: HTMLElement;
@@ -161,6 +175,9 @@ export class SidebarView {
         this.unsubSideNote?.();
         if (this.boundDocClickListener) {
             document.removeEventListener("click", this.boundDocClickListener);
+        }
+        if (this.boundDocKeydownListener) {
+            document.removeEventListener("keydown", this.boundDocKeydownListener);
         }
         if (this.boundSelectionChangeListener) {
             document.removeEventListener("selectionchange", this.boundSelectionChangeListener);
@@ -286,11 +303,11 @@ export class SidebarView {
 
                 <div class="lh-graph-drawer" style="display:none;"></div>
                 <div class="lh-selection-bar fn__none" role="toolbar" aria-label="Ask about selected text">
-                    <button type="button" class="lh-selection-bar__btn" data-sel-action="explain" title="Break down this statement">? Don't follow</button>
-                    <button type="button" class="lh-selection-bar__btn" data-sel-action="bridge" title="Explain how this follows from the previous step">↳ Why this follows</button>
-                    <button type="button" class="lh-selection-bar__btn" data-sel-action="relevance" title="Explain why this matters to the goal">🎯 Why it matters</button>
-                    <button type="button" class="lh-selection-bar__btn" data-sel-action="example" title="Give a concrete example or intuition">💡 Example</button>
-                    <button type="button" class="lh-selection-bar__btn" data-sel-action="custom" title="Ask your own question about this selection">💬 Ask</button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="explain" title="Break down this statement">${ICON.help}<span>Don't follow</span></button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="bridge" title="Explain how this follows from the previous step">${ICON.bridge}<span>Why it follows</span></button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="relevance" title="Explain why this matters to the goal">${ICON.target}<span>Relevance</span></button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="example" title="Give a concrete example or intuition">${ICON.spark}<span>Example</span></button>
+                    <button type="button" class="lh-selection-bar__btn" data-sel-action="custom" title="Ask your own question about this selection">${ICON.ask}<span>Ask</span></button>
                 </div>
             </div>
         `;
@@ -558,8 +575,7 @@ export class SidebarView {
         const chats = this.stores.chatStore.listChats();
         const activeChat = this.getActiveChat();
         if (this.sessionTitleEl) {
-            const prefix = activeChat?.kind === "practice" ? "🎯 " : "";
-            this.sessionTitleEl.textContent = `${prefix}${activeChat?.title || "New Chat"}`;
+            this.sessionTitleEl.textContent = activeChat?.title || "New Chat";
         }
 
         if (!this.sessionListEl) return;
@@ -571,7 +587,7 @@ export class SidebarView {
 
         const itemsHtml = chats.map((c) => {
             const isActive = c.id === this.activeChatId;
-            const icon = c.kind === "practice" ? "🎯" : "💬";
+            const icon = c.kind === "practice" ? ICON.target : ICON.chat;
             return `
                 <div class="lh-dropdown-item ${isActive ? "lh-dropdown-item--active" : ""}" data-chat-id="${escapeHtml(c.id)}">
                     <div class="lh-dropdown-item__main">
@@ -612,14 +628,18 @@ export class SidebarView {
             if (st === "current") currentTitle = n.title;
         }
 
+        const pct = tree.nodes.length > 0 ? Math.round((visitedCount / tree.nodes.length) * 100) : 0;
+
         this.planStripEl.innerHTML = `
             <div class="lh-plan-strip__bar" data-action="toggle-plan-strip">
                 <span class="lh-plan-strip__summary">
-                    🗺️ <strong>${escapeHtml(currentTitle)}</strong>
-                    <span class="lh-plan-strip__count">(${visitedCount}/${tree.nodes.length})</span>
+                    <span class="lh-plan-strip__icon">${ICON.plan}</span>
+                    <strong>${escapeHtml(currentTitle)}</strong>
+                    <span class="lh-plan-strip__count">${visitedCount}/${tree.nodes.length}</span>
                 </span>
                 <span class="lh-plan-strip__chevron">${this.planExpanded ? "▴" : "▾"}</span>
             </div>
+            <div class="lh-plan-strip__progress"><div class="lh-plan-strip__progress-fill" style="width:${pct}%"></div></div>
             ${
                 this.planExpanded
                     ? `
@@ -627,10 +647,10 @@ export class SidebarView {
                     ${tree.nodes
                         .map((n) => {
                             const st = derivedNodeStatus(statuses, n.id);
-                            const icon = st === "current" ? "🎯" : st === "visited" ? "✓" : "○";
+                            const dot = `<span class="lh-plan-strip__dot lh-plan-strip__dot--${st}"></span>`;
                             return `
                                 <div class="lh-plan-strip__node lh-plan-strip__node--${st}">
-                                    <span>${icon}</span>
+                                    ${dot}
                                     <span>${escapeHtml(n.title)}</span>
                                 </div>
                             `;
@@ -655,14 +675,27 @@ export class SidebarView {
             const isPractice = chat.kind === "practice";
             transcriptEl.innerHTML = `
                 <div class="lh-chat-empty">
+                    <div class="lh-chat-empty__orb">${ICON.orb}</div>
                     <div class="lh-chat-empty__title">
                         ${isPractice ? "Practice Mode" : "What would you like to learn?"}
                     </div>
                     <div class="lh-chat-empty__sub">
-                        Type a topic below, or type <code>((</code> / paste a block from your open SiYuan note to reference it directly.
+                        Type a topic below, or use <code>((</code> to reference blocks from your SiYuan notes.
                     </div>
+                    ${
+                        isPractice
+                            ? ""
+                            : `
+                        <div class="lh-chat-empty__chips">
+                            <button type="button" class="lh-starter-chip" data-action="starter-prompt" data-prompt="Teach me the topic in my currently open note, starting from where my understanding ends.">Teach my open note</button>
+                            <button type="button" class="lh-starter-chip" data-action="starter-prompt" data-prompt="Help me work through the questions in my open note step by step.">Work through note questions</button>
+                            <button type="button" class="lh-starter-chip" data-action="starter-prompt" data-prompt="Quiz me on the key concepts in my open note to find my weak spots.">Find my weak spots</button>
+                        </div>
+                    `
+                    }
                 </div>
             `;
+            this.syncScrollDownButton();
             return;
         }
 
@@ -771,7 +804,7 @@ export class SidebarView {
                     const summary = this.describeReadToolCall(block.name, block.arguments);
                     parts.push(`
                         <details class="lh-subtle-pill">
-                            <summary>🔍 ${escapeHtml(summary)}</summary>
+                            <summary>${ICON.search}<span>${escapeHtml(summary)}</span></summary>
                             <pre class="lh-subtle-pill__pre">${escapeHtml(
                                 res ? res.content.map((c) => c.text).join("\n") : "Reading...",
                             )}</pre>
@@ -917,9 +950,13 @@ export class SidebarView {
             }
         }
         if (st.activeToolStatus) {
-            parts.push(`<div class="lh-typing-indicator">${escapeHtml(st.activeToolStatus)}</div>`);
+            parts.push(
+                `<div class="lh-typing-indicator"><span class="lh-typing-dots"><span></span><span></span><span></span></span><span>${escapeHtml(st.activeToolStatus)}</span></div>`,
+            );
         } else if (st.busy && parts.length === 0) {
-            parts.push(`<div class="lh-typing-indicator">Thinking...</div>`);
+            parts.push(
+                `<div class="lh-typing-indicator"><span class="lh-typing-dots"><span></span><span></span><span></span></span><span>Thinking</span></div>`,
+            );
         }
         if (st.error) {
             parts.push(`<div class="lh-error-banner">${escapeHtml(st.error)}</div>`);
@@ -1008,7 +1045,7 @@ export class SidebarView {
                     <div class="lh-q-thinking-wrap">
                         <div class="lh-q-thinking-label-row">
                             <label class="lh-q-thinking-label">Thinking (optional — share your reasoning, hunches, or confusion)</label>
-                            <button type="button" class="lh-q-mic-btn" data-action="toggle-thinking-mic" title="Voice your thinking (local)">🎙 Speak</button>
+                            <button type="button" class="lh-q-mic-btn" data-action="toggle-thinking-mic" title="Voice your thinking (local)">${ICON.mic}<span>Speak</span></button>
                         </div>
                         <div class="lh-voice-bar lh-voice-bar--question fn__none">
                             <canvas class="lh-voice-waveform"></canvas>
@@ -1202,13 +1239,21 @@ export class SidebarView {
     }
 
     private bindEvents(): void {
-        // Close session dropdown when clicking outside
+        // Close session dropdown when clicking outside or pressing Escape
         this.boundDocClickListener = (ev: MouseEvent) => {
             if (this.sessionDropdownEl && !this.sessionDropdownEl.contains(ev.target as Node)) {
                 this.sessionMenuEl?.classList.add("fn__none");
             }
         };
         document.addEventListener("click", this.boundDocClickListener);
+
+        this.boundDocKeydownListener = (ev: KeyboardEvent) => {
+            if (ev.key === "Escape") {
+                this.sessionMenuEl?.classList.add("fn__none");
+                this.hideSelectionBar();
+            }
+        };
+        document.addEventListener("keydown", this.boundDocKeydownListener);
 
         // Hover preview for SiYuan block references (`data-block-ref-id` or Protyle `data-type="block-ref"`)
         this.rootElement.addEventListener("mouseover", (e) => {
@@ -1337,7 +1382,7 @@ export class SidebarView {
                             showMessage(`Voice error: ${err?.message ?? String(err)}`, 4000, "error");
                         } finally {
                             target.classList.remove("lh-mic-btn--busy");
-                            target.textContent = "🎙 Speak";
+                            target.innerHTML = `${ICON.mic}<span>Speak</span>`;
                             voiceBar?.classList.add("fn__none");
                         }
                     })();
@@ -1409,6 +1454,11 @@ export class SidebarView {
                 if (this.streamEl) {
                     this.streamEl.scrollTop = this.streamEl.scrollHeight;
                     this.syncScrollDownButton();
+                }
+            } else if (action === "starter-prompt") {
+                const prompt = target.dataset.prompt;
+                if (prompt) {
+                    void this.handleUserSubmit({ displayMarkdown: prompt, referencedBlockIds: [] });
                 }
             }
         });
@@ -1759,11 +1809,11 @@ export class SidebarView {
                     actions.className = "lh-block-actions";
                     actions.setAttribute("contenteditable", "false");
                     actions.innerHTML = `
-                        <button type="button" class="lh-block-actions__btn" data-block-action="explain" title="Don't follow — break this down">?</button>
-                        <button type="button" class="lh-block-actions__btn" data-block-action="bridge" title="How does this follow from the previous step?">↳</button>
-                        <button type="button" class="lh-block-actions__btn" data-block-action="relevance" title="Why does this matter here?">🎯</button>
-                        <button type="button" class="lh-block-actions__btn" data-block-action="example" title="Give an example or intuition">💡</button>
-                        <button type="button" class="lh-block-actions__btn" data-block-action="custom" title="Ask a custom question about this block">💬</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="explain" title="Don't follow — break this down">${ICON.help}</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="bridge" title="How does this follow from the previous step?">${ICON.bridge}</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="relevance" title="Why does this matter here?">${ICON.target}</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="example" title="Give an example or intuition">${ICON.spark}</button>
+                        <button type="button" class="lh-block-actions__btn" data-block-action="custom" title="Ask a custom question about this block">${ICON.ask}</button>
                     `;
                     blockEl.appendChild(actions);
 
@@ -1786,13 +1836,13 @@ export class SidebarView {
     private renderSideNoteHtml(sn: SideNoteThread): string {
         const stream = this.runner.getSideNoteStream(sn.id);
         const intentLabels: Record<SideNoteIntent, string> = {
-            explain: "? Don't follow",
-            bridge: "↳ Why this follows",
-            relevance: "🎯 Why it matters",
-            example: "💡 Example",
-            custom: "💬 Side-note",
+            explain: `${ICON.help}<span>Don't follow</span>`,
+            bridge: `${ICON.bridge}<span>Why it follows</span>`,
+            relevance: `${ICON.target}<span>Relevance</span>`,
+            example: `${ICON.spark}<span>Example</span>`,
+            custom: `${ICON.ask}<span>Side-note</span>`,
         };
-        const badge = intentLabels[sn.intent] ?? "💬 Side-note";
+        const badgeHtml = intentLabels[sn.intent] ?? `${ICON.ask}<span>Side-note</span>`;
         const shortQuote = sn.quote.length > 68 ? `${sn.quote.slice(0, 65)}...` : sn.quote;
         const replyCount = sn.entries.filter((e) => e.role === "assistant").length;
 
@@ -1800,7 +1850,7 @@ export class SidebarView {
             return `
                 <div class="lh-sidenote lh-sidenote--collapsed" data-sidenote-id="${escapeHtml(sn.id)}">
                     <button type="button" class="lh-sidenote__pill" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Expand side-note">
-                        <span class="lh-sidenote__badge">${escapeHtml(badge)}</span>
+                        <span class="lh-sidenote__badge">${badgeHtml}</span>
                         <span class="lh-sidenote__pill-quote">"${escapeHtml(shortQuote)}"</span>
                         <span class="lh-sidenote__pill-count">${replyCount} ${replyCount === 1 ? "reply" : "replies"} ▸</span>
                     </button>
@@ -1839,14 +1889,14 @@ export class SidebarView {
             <div class="lh-sidenote" data-sidenote-id="${escapeHtml(sn.id)}">
                 <div class="lh-sidenote__header">
                     <button type="button" class="lh-sidenote__header-toggle" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Collapse side-note">
-                        <span class="lh-sidenote__badge">${escapeHtml(badge)}</span>
+                        <span class="lh-sidenote__badge">${badgeHtml}</span>
                         <span class="lh-sidenote__quote">"${escapeHtml(shortQuote)}"</span>
                         <span class="lh-sidenote__chev">▾</span>
                     </button>
                     <div class="lh-sidenote__header-actions">
                         ${
                             stream?.busy
-                                ? `<button type="button" class="lh-sidenote__mini-btn" data-sidenote-stop="${escapeHtml(sn.id)}" title="Stop generating">⏹ Stop</button>`
+                                ? `<button type="button" class="lh-sidenote__mini-btn" data-sidenote-stop="${escapeHtml(sn.id)}" title="Stop generating">Stop</button>`
                                 : sn.entries.length > 0
                                   ? `<button type="button" class="lh-sidenote__mini-btn" data-sidenote-promote="${escapeHtml(sn.id)}" title="Move this question to the main chat">→ Chat</button>`
                                   : ""
