@@ -56,6 +56,13 @@ const ICON = {
     orb: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="22" height="22"><path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/></svg>`,
     chat: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
     mic: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>`,
+    plus: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="15" height="15"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
+    graph: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="15" height="15"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 7.2 10.8 15.8"/><path d="M15.8 7.2 13.2 15.8"/><path d="M8.5 6h7"/></svg>`,
+    trash: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>`,
+    settings: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+    minimize: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M5 12h14"/></svg>`,
+    back: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="15" height="15"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>`,
+    chevron: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><polyline points="6 9 12 15 18 9"/></svg>`,
 };
 
 export interface SidebarCallbacks {
@@ -82,14 +89,16 @@ export class SidebarView {
     private callbacks: SidebarCallbacks;
 
     private activeChatId: string | null = null;
-    private showGraphOverlay = false;
+    private viewMode: "chat" | "chats" | "graph" = "chat";
     private planExpanded = false;
     private questionDraft: ActiveQuestionDraft | null = null;
 
-    private sessionDropdownEl!: HTMLElement;
     private sessionTitleEl!: HTMLElement;
-    private sessionMenuEl!: HTMLElement;
+    private backBtnEl!: HTMLElement;
+    private chatsViewEl!: HTMLElement;
+    private sessionSearchEl!: HTMLInputElement;
     private sessionListEl!: HTMLElement;
+    private historySearchQuery = "";
     private boundDocClickListener?: (e: MouseEvent) => void;
     private boundDocKeydownListener?: (e: KeyboardEvent) => void;
     private boundSelectionChangeListener?: () => void;
@@ -141,9 +150,9 @@ export class SidebarView {
 
         this.unsubStore = this.stores.subscribe(() => {
             this.renderHeaderSelect();
-            if (this.showGraphOverlay) {
+            if (this.viewMode === "graph") {
                 this.graphView?.refresh();
-            } else {
+            } else if (this.viewMode === "chat") {
                 this.renderPlanStrip();
                 this.renderTranscript();
                 this.renderQuestionCard();
@@ -153,7 +162,7 @@ export class SidebarView {
 
         this.unsubRunner = this.runner.subscribe((changedChatId) => {
             this.renderHeaderSelect();
-            if (changedChatId === this.activeChatId && !this.showGraphOverlay) {
+            if (changedChatId === this.activeChatId && this.viewMode === "chat") {
                 this.renderPlanStrip();
                 this.renderTranscript();
                 this.renderStreamingSlot();
@@ -163,7 +172,7 @@ export class SidebarView {
         });
 
         this.unsubSideNote = this.runner.subscribeSideNote((changedChatId, threadId) => {
-            if (changedChatId === this.activeChatId && !this.showGraphOverlay) {
+            if (changedChatId === this.activeChatId && this.viewMode === "chat") {
                 this.updateSideNoteInPlace(threadId);
             }
         });
@@ -191,7 +200,7 @@ export class SidebarView {
 
     public selectChat(chatId: string): void {
         this.activeChatId = chatId;
-        this.showGraphOverlay = false;
+        this.viewMode = "chat";
         this.questionDraft = null;
         this.syncViewMode();
         this.renderAllChat();
@@ -233,7 +242,7 @@ export class SidebarView {
 
     /** Insert a block reference directly into the current chat's mini Protyle editor. */
     public async insertBlockIntoInput(blockId: string): Promise<void> {
-        this.showGraphOverlay = false;
+        this.viewMode = "chat";
         this.syncViewMode();
         let label = blockId;
         try {
@@ -251,40 +260,40 @@ export class SidebarView {
         this.rootElement.innerHTML = `
             <div class="fn__flex-1 fn__flex-column lh-dock-chat">
                 <div class="block__icons lh-chat-header">
-                    <div class="lh-session-dropdown">
-                    <button type="button" class="lh-session-dropdown__trigger" data-action="toggle-session-menu" title="Switch or manage chat sessions">
-                        <span class="lh-session-dropdown__active-title">New Chat</span>
-                        <svg class="lh-session-dropdown__chevron" viewBox="0 0 16 16"><path fill="currentColor" d="M4.5 6L8 9.5 11.5 6z"/></svg>
-                    </button>
-                    <div class="lh-session-dropdown__menu fn__none">
-                        <div class="lh-session-dropdown__actions">
-                            <button type="button" class="lh-session-dropdown__new-btn" data-action="dropdown-new-chat">
-                                <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/></svg>
-                                <span>New Chat</span>
-                            </button>
-                        </div>
-                        <div class="lh-session-dropdown__list"></div>
+                    <div class="lh-chat-header__left">
+                        <button type="button" class="lh-header-icon-btn lh-back-btn" title="All Chats" aria-label="All Chats" data-action="toggle-chats-view">
+                            ${ICON.back}
+                        </button>
+                        <span class="lh-chat-header__title"></span>
                     </div>
-                </div>
-                    <span class="fn__space"></span>
-                    <span class="block__icon b3-tooltips b3-tooltips__sw" aria-label="New Chat" data-action="new-chat">
-                        <svg><use xlink:href="#iconAdd"></use></svg>
-                    </span>
-                    <span class="block__icon b3-tooltips b3-tooltips__sw lh-graph-toggle-btn" aria-label="Toggle Knowledge Graph" data-action="toggle-graph">
-                        <svg><use xlink:href="#iconGraph"></use></svg>
-                    </span>
-                    <span class="block__icon b3-tooltips b3-tooltips__sw" aria-label="Delete Chat" data-action="delete-chat">
-                        <svg><use xlink:href="#iconTrashcan"></use></svg>
-                    </span>
-                    <span class="block__icon b3-tooltips b3-tooltips__sw" aria-label="Settings" data-action="open-settings">
-                        <svg><use xlink:href="#iconSettings"></use></svg>
-                    </span>
-                    <span data-type="min" class="block__icon b3-tooltips b3-tooltips__sw" aria-label="Minimize">
-                        <svg><use xlink:href="#iconMin"></use></svg>
-                    </span>
+                    <div class="lh-chat-header__actions">
+                        <button type="button" class="lh-header-icon-btn" title="New Chat" aria-label="New Chat" data-action="new-chat">
+                            ${ICON.plus}
+                        </button>
+                        <button type="button" class="lh-header-icon-btn lh-graph-toggle-btn" title="Knowledge Graph" aria-label="Toggle Knowledge Graph" data-action="toggle-graph">
+                            ${ICON.graph}
+                        </button>
+                        <button type="button" class="lh-header-icon-btn" title="Settings" aria-label="Settings" data-action="open-settings">
+                            ${ICON.settings}
+                        </button>
+                        <span class="lh-header-sep" aria-hidden="true"></span>
+                        <span data-type="min" class="lh-header-icon-btn" title="Minimize" aria-label="Minimize">
+                            ${ICON.minimize}
+                        </span>
+                    </div>
                 </div>
 
                 <div class="lh-plan-strip" style="display:none;"></div>
+
+                <div class="lh-chats-view" style="display:none;">
+                    <div class="lh-chats-view__search-bar">
+                        <div class="lh-history-menu__search">
+                            ${ICON.search}
+                            <input type="text" class="lh-history-menu__input" placeholder="Search chats..." autocomplete="off" />
+                        </div>
+                    </div>
+                    <div class="lh-chats-view__list"></div>
+                </div>
 
                 <div class="lh-chat-main">
                     <div class="lh-chat-stream-wrap">
@@ -312,10 +321,11 @@ export class SidebarView {
             </div>
         `;
 
-        this.sessionDropdownEl = this.rootElement.querySelector(".lh-session-dropdown") as HTMLElement;
-        this.sessionTitleEl = this.rootElement.querySelector(".lh-session-dropdown__active-title") as HTMLElement;
-        this.sessionMenuEl = this.rootElement.querySelector(".lh-session-dropdown__menu") as HTMLElement;
-        this.sessionListEl = this.rootElement.querySelector(".lh-session-dropdown__list") as HTMLElement;
+        this.sessionTitleEl = this.rootElement.querySelector(".lh-chat-header__title") as HTMLElement;
+        this.backBtnEl = this.rootElement.querySelector(".lh-back-btn") as HTMLElement;
+        this.chatsViewEl = this.rootElement.querySelector(".lh-chats-view") as HTMLElement;
+        this.sessionSearchEl = this.rootElement.querySelector(".lh-history-menu__input") as HTMLInputElement;
+        this.sessionListEl = this.rootElement.querySelector(".lh-chats-view__list") as HTMLElement;
         this.selectionBarEl = this.rootElement.querySelector(".lh-selection-bar") as HTMLElement;
         this.graphBtnEl = this.rootElement.querySelector(".lh-graph-toggle-btn") as HTMLElement;
         this.planStripEl = this.rootElement.querySelector(".lh-plan-strip") as HTMLElement;
@@ -536,6 +546,7 @@ export class SidebarView {
                 this.selectChat(chatId);
                 void this.runner.runAgentTurn(chatId);
             },
+            getActiveChatId: () => this.activeChatId,
         });
 
         this.bindEvents();
@@ -543,16 +554,26 @@ export class SidebarView {
     }
 
     private syncViewMode(): void {
-        if (this.showGraphOverlay) {
-            this.chatBodyEl.style.display = "none";
-            this.planStripEl.style.display = "none";
-            this.graphBodyEl.style.display = "flex";
-            this.graphBtnEl.classList.add("lh-icon-active");
-            this.graphView?.refresh();
+        const isGraph = this.viewMode === "graph";
+        const isChats = this.viewMode === "chats";
+        const isChat = this.viewMode === "chat";
+
+        this.chatBodyEl.style.display = isChat ? "flex" : "none";
+        this.chatsViewEl.style.display = isChats ? "flex" : "none";
+        this.graphBodyEl.style.display = isGraph ? "flex" : "none";
+        if (!isChat) this.planStripEl.style.display = "none";
+
+        this.graphBtnEl.classList.toggle("lh-icon-active", isGraph);
+        this.backBtnEl.classList.toggle("lh-icon-active", isChats);
+        this.backBtnEl.title = isChat ? "All Chats" : "Back to Chat";
+
+        this.renderHeaderSelect();
+
+        if (isGraph) {
+            window.requestAnimationFrame(() => this.graphView?.refresh());
+        } else if (isChats) {
+            window.requestAnimationFrame(() => this.sessionSearchEl?.focus());
         } else {
-            this.chatBodyEl.style.display = "flex";
-            this.graphBodyEl.style.display = "none";
-            this.graphBtnEl.classList.remove("lh-icon-active");
             this.renderPlanStrip();
         }
     }
@@ -571,31 +592,73 @@ export class SidebarView {
         return this.stores.chatStore.getChat(this.activeChatId);
     }
 
+    private formatRelativeTime(iso: string): string {
+        const ts = Date.parse(iso);
+        if (Number.isNaN(ts)) return "";
+        const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+        if (diffSec < 60) return "Just now";
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin}m ago`;
+        const diffHr = Math.floor(diffMin / 60);
+        if (diffHr < 24) return `${diffHr}h ago`;
+        const diffDay = Math.floor(diffHr / 24);
+        if (diffDay === 1) return "Yesterday";
+        if (diffDay < 7) return `${diffDay}d ago`;
+        return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+
     private renderHeaderSelect(): void {
         const chats = this.stores.chatStore.listChats();
         const activeChat = this.getActiveChat();
         if (this.sessionTitleEl) {
-            this.sessionTitleEl.textContent = activeChat?.title || "New Chat";
+            if (this.viewMode === "chats") {
+                this.sessionTitleEl.textContent = "Chats";
+                this.sessionTitleEl.title = "All Chats";
+            } else if (this.viewMode === "graph") {
+                this.sessionTitleEl.textContent = "Knowledge Graph";
+                this.sessionTitleEl.title = "Knowledge Graph";
+            } else {
+                const rawTitle = activeChat?.title?.trim();
+                this.sessionTitleEl.textContent = rawTitle && rawTitle !== "New Chat" ? rawTitle : "";
+                this.sessionTitleEl.title = rawTitle || "";
+            }
         }
 
         if (!this.sessionListEl) return;
 
-        if (chats.length === 0) {
-            this.sessionListEl.innerHTML = `<div class="lh-session-dropdown__empty">No chats yet</div>`;
+        const q = this.historySearchQuery.trim().toLowerCase();
+        const filtered = q
+            ? chats.filter(
+                  (c) =>
+                      c.title.toLowerCase().includes(q) ||
+                      (c.linkedDocTitle ?? "").toLowerCase().includes(q),
+              )
+            : chats;
+
+        if (filtered.length === 0) {
+            this.sessionListEl.innerHTML = `<div class="lh-chats-view__empty">${
+                q ? "No matching chats" : "No chats yet"
+            }</div>`;
             return;
         }
 
-        const itemsHtml = chats.map((c) => {
+        const itemsHtml = filtered.map((c) => {
             const isActive = c.id === this.activeChatId;
             const icon = c.kind === "practice" ? ICON.target : ICON.chat;
+            const metaParts = [
+                c.linkedDocTitle ? c.linkedDocTitle : "",
+                c.messageCount > 0 ? `${c.messageCount} msgs` : "Empty",
+                this.formatRelativeTime(c.updatedAt),
+            ].filter(Boolean);
             return `
-                <div class="lh-dropdown-item ${isActive ? "lh-dropdown-item--active" : ""}" data-chat-id="${escapeHtml(c.id)}">
-                    <div class="lh-dropdown-item__main">
-                        <span class="lh-dropdown-item__icon">${icon}</span>
-                        <span class="lh-dropdown-item__title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+                <div class="lh-chat-row ${isActive ? "lh-chat-row--active" : ""}" data-chat-id="${escapeHtml(c.id)}">
+                    <span class="lh-chat-row__icon">${icon}</span>
+                    <div class="lh-chat-row__body">
+                        <div class="lh-chat-row__title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</div>
+                        <div class="lh-chat-row__meta">${escapeHtml(metaParts.join(" · "))}</div>
                     </div>
-                    <button type="button" class="lh-dropdown-item__del-btn" data-delete-id="${escapeHtml(c.id)}" title="Delete chat">
-                        <svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.5 2a.5.5 0 0 0-.5.5v1H2.5a.5.5 0 0 0 0 1h.541l.732 9.026A1.5 1.5 0 0 0 5.266 15h5.468a1.5 1.5 0 0 0 1.493-1.474L12.959 4.5h.541a.5.5 0 0 0 0-1H11v-1a.5.5 0 0 0-.5-.5h-5zM6 3h4v1H6V3zm-.954 2h5.908l-.715 8.818a.5.5 0 0 1-.498.482H5.266a.5.5 0 0 1-.498-.482L4.046 5z"/></svg>
+                    <button type="button" class="lh-chat-row__del-btn" data-delete-id="${escapeHtml(c.id)}" title="Delete chat">
+                        ${ICON.trash}
                     </button>
                 </div>
             `;
@@ -605,7 +668,7 @@ export class SidebarView {
     }
 
     private renderPlanStrip(): void {
-        if (this.showGraphOverlay) {
+        if (this.viewMode !== "chat") {
             this.planStripEl.style.display = "none";
             return;
         }
@@ -1239,21 +1302,21 @@ export class SidebarView {
     }
 
     private bindEvents(): void {
-        // Close session dropdown when clicking outside or pressing Escape
-        this.boundDocClickListener = (ev: MouseEvent) => {
-            if (this.sessionDropdownEl && !this.sessionDropdownEl.contains(ev.target as Node)) {
-                this.sessionMenuEl?.classList.add("fn__none");
-            }
-        };
-        document.addEventListener("click", this.boundDocClickListener);
-
         this.boundDocKeydownListener = (ev: KeyboardEvent) => {
             if (ev.key === "Escape") {
-                this.sessionMenuEl?.classList.add("fn__none");
+                if (this.viewMode === "chats") {
+                    this.viewMode = "chat";
+                    this.syncViewMode();
+                }
                 this.hideSelectionBar();
             }
         };
         document.addEventListener("keydown", this.boundDocKeydownListener);
+
+        this.sessionSearchEl?.addEventListener("input", () => {
+            this.historySearchQuery = this.sessionSearchEl.value;
+            this.renderHeaderSelect();
+        });
 
         // Hover preview for SiYuan block references (`data-block-ref-id` or Protyle `data-type="block-ref"`)
         this.rootElement.addEventListener("mouseover", (e) => {
@@ -1296,7 +1359,6 @@ export class SidebarView {
                 const chatId = chatItem.dataset.chatId;
                 if (chatId) {
                     this.selectChat(chatId);
-                    this.sessionMenuEl?.classList.add("fn__none");
                 }
                 return;
             }
@@ -1304,20 +1366,21 @@ export class SidebarView {
             if (!target) return;
             const action = target.dataset.action;
 
-            if (action === "toggle-session-menu") {
-                this.sessionMenuEl?.classList.toggle("fn__none");
-                this.renderHeaderSelect();
-                return;
-            } else if (action === "dropdown-new-chat") {
-                const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
-                this.selectChat(created.id);
-                this.sessionMenuEl?.classList.add("fn__none");
+            if (action === "toggle-chats-view") {
+                if (this.viewMode === "chat") {
+                    this.historySearchQuery = "";
+                    if (this.sessionSearchEl) this.sessionSearchEl.value = "";
+                    this.viewMode = "chats";
+                } else {
+                    this.viewMode = "chat";
+                }
+                this.syncViewMode();
                 return;
             } else if (action === "new-chat") {
                 const created = this.stores.chatStore.createChat({ title: "New Chat", kind: "teach" });
                 this.selectChat(created.id);
             } else if (action === "toggle-graph") {
-                this.showGraphOverlay = !this.showGraphOverlay;
+                this.viewMode = this.viewMode === "graph" ? "chat" : "graph";
                 this.syncViewMode();
             } else if (action === "delete-chat") {
                 if (!this.activeChatId) return;
@@ -1581,7 +1644,7 @@ export class SidebarView {
     }
 
     private updateSelectionBar(): void {
-        if (this.showGraphOverlay || !this.streamEl || !this.selectionBarEl) {
+        if (this.viewMode !== "chat" || !this.streamEl || !this.selectionBarEl) {
             this.hideSelectionBar();
             return;
         }
