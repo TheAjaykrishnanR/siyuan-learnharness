@@ -1213,6 +1213,56 @@
     }
 }
 
+.lh-user-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+
+    &:last-child {
+        margin-bottom: 0;
+    }
+
+    &__img {
+        max-width: 190px;
+        max-height: 150px;
+        border-radius: 9px;
+        border: 1px solid var(--lh-glass-border-strong);
+        object-fit: cover;
+        display: block;
+    }
+}
+
+.lh-user-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 6px;
+
+    &:last-child {
+        margin-bottom: 0;
+    }
+
+    &__chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: var(--lh-glass-bg);
+        border: 1px solid var(--lh-glass-border-strong);
+        font-size: 11.5px;
+        color: var(--b3-theme-on-surface);
+        max-width: 220px;
+
+        > span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+}
+
 .lh-assistant-prose {
     font-size: 13.5px;
     line-height: 1.66;
@@ -1783,12 +1833,122 @@
         z-index: 0;
     }
 
-    &:focus-within {
+    .lh-composer-file-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 30px;
+        max-width: 190px;
+        padding: 0 7px 0 8px;
+        border-radius: 8px;
+        background: var(--lh-glass-bg-strong);
+        border: 1px solid var(--lh-glass-border-strong);
+        color: var(--b3-theme-on-surface);
+        font-size: 11.5px;
+        align-self: center;
+
+        &__name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+            flex: 1;
+        }
+
+        &__size {
+            font-size: 10px;
+            color: var(--b3-theme-on-surface-light);
+            flex-shrink: 0;
+        }
+
+        &__rm {
+            appearance: none;
+            border: none;
+            background: transparent;
+            color: var(--b3-theme-on-surface-light);
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            font-size: 12px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            flex-shrink: 0;
+
+            &:hover {
+                background: rgba(239, 68, 68, 0.16);
+                color: #ef4444;
+            }
+        }
+    }
+
+    &:focus-within,
+    &--dragover {
         border-color: var(--lh-primary-border);
         box-shadow:
             0 0 0 2px var(--lh-primary-soft),
             0 10px 30px rgba(0, 0, 0, 0.24),
             var(--lh-glass-highlight);
+    }
+
+    .lh-composer-attachments {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 9px 12px 2px;
+
+        &.fn__none {
+            display: none !important;
+        }
+    }
+
+    .lh-composer-thumb {
+        position: relative;
+        width: 52px;
+        height: 52px;
+        border-radius: 9px;
+        overflow: hidden;
+        border: 1px solid var(--lh-glass-border-strong);
+        background: var(--b3-theme-background);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        &__rm {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0, 0, 0, 0.68);
+            color: #fff;
+            font-size: 12px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            opacity: 0.85;
+            transition: background-color 0.12s ease, opacity 0.12s ease;
+
+            &:hover {
+                opacity: 1;
+                background: #ef4444;
+            }
+        }
     }
 
     &__editor {

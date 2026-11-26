@@ -12,6 +12,7 @@ import {
     ChevronDown,
     createElement,
     Dumbbell,
+    FileText,
     ListChecks,
     MessageSquareText,
     Mic,
@@ -21,6 +22,7 @@ import {
     Square,
 } from "lucide";
 import { Protyle, showMessage, type App } from "siyuan";
+import type { NoteImageAttachment, UploadedFileAttachment } from "../core/contracts";
 import { localStt } from "./local-stt";
 import { escapeHtml } from "./markdown";
 
@@ -54,6 +56,8 @@ export interface SiYuanBlockInputOptions {
         displayMarkdown: string;
         referencedBlockIds: string[];
         imagePaths: string[];
+        uploadedImages: NoteImageAttachment[];
+        uploadedFiles: UploadedFileAttachment[];
     }) => void;
     onStop: () => void;
 }
@@ -77,7 +81,8 @@ const STOP_SQUARE_SVG = createElement(Square, {
     style: "fill: currentColor !important; stroke: none !important;",
 }).outerHTML;
 
-const NOTE_LINK_SVG = createElement(Paperclip, svgOpts(15)).outerHTML;
+const ATTACH_FILE_SVG = createElement(Paperclip, svgOpts(15)).outerHTML;
+const FILE_CHIP_SVG = createElement(FileText, svgOpts(13)).outerHTML;
 const TEACH_ICON_SVG = createElement(BookOpen, svgOpts(15)).outerHTML;
 const PRACTICE_ICON_SVG = createElement(Dumbbell, svgOpts(15)).outerHTML;
 const QUIZ_ICON_SVG = createElement(ListChecks, svgOpts(15)).outerHTML;
@@ -95,6 +100,10 @@ export class SiYuanBlockInput {
 
     private cardEl!: HTMLElement;
     private protyleHostEl!: HTMLElement;
+    private attachmentsEl!: HTMLElement;
+    private fileInputEl!: HTMLInputElement;
+    private pendingImages: NoteImageAttachment[] = [];
+    private pendingFiles: UploadedFileAttachment[] = [];
     private modeBtnEl!: HTMLButtonElement;
     private modelBtnEl!: HTMLButtonElement;
     private modelPillTextEl!: HTMLElement;
@@ -162,6 +171,8 @@ export class SiYuanBlockInput {
         this.cardEl = document.createElement("div");
         this.cardEl.className = "lh-composer-card";
         this.cardEl.innerHTML = `
+            <input type="file" class="lh-image-file-input fn__none" multiple />
+            <div class="lh-composer-attachments fn__none"></div>
             <div class="lh-composer-card__editor" data-placeholder="${escapeHtml(
                 this.opts.placeholder ?? "Write a note or question... (/ for blocks, (( to reference notes)",
             )}"></div>
@@ -171,8 +182,8 @@ export class SiYuanBlockInput {
             </div>
             <div class="lh-composer-card__footer">
                 <div class="lh-composer-card__left">
-                    <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-note" title="Attach active SiYuan note">
-                        ${NOTE_LINK_SVG}
+                    <button class="lh-composer-icon-btn" type="button" data-composer-action="attach-file" title="Attach files or images (or paste / drag & drop)">
+                        ${ATTACH_FILE_SVG}
                     </button>
                     <button class="lh-composer-icon-btn lh-mic-btn" type="button" data-composer-action="toggle-mic" title="Voice input (local)">
                         ${MIC_ICON_SVG}
@@ -203,6 +214,8 @@ export class SiYuanBlockInput {
         this.container.appendChild(this.modelMenuEl);
         this.container.appendChild(this.cardEl);
         this.protyleHostEl = this.cardEl.querySelector(".lh-composer-card__editor") as HTMLElement;
+        this.attachmentsEl = this.cardEl.querySelector(".lh-composer-attachments") as HTMLElement;
+        this.fileInputEl = this.cardEl.querySelector(".lh-image-file-input") as HTMLInputElement;
         this.micBtnEl = this.cardEl.querySelector(".lh-mic-btn") as HTMLButtonElement;
         this.voiceBarEl = this.cardEl.querySelector(".lh-voice-bar") as HTMLElement;
         this.voiceCanvasEl = this.cardEl.querySelector(".lh-voice-waveform") as HTMLCanvasElement;
@@ -441,6 +454,9 @@ export class SiYuanBlockInput {
         } catch {
             // ignore
         }
+        this.pendingImages = [];
+        this.pendingFiles = [];
+        this.renderPendingAttachments();
         this.syncEmptyState();
     }
 
@@ -469,14 +485,156 @@ export class SiYuanBlockInput {
     public submit(): void {
         if (this.busy) return;
         const { markdown, referencedBlockIds, imagePaths } = this.extractContent();
-        if (!markdown && referencedBlockIds.length === 0 && imagePaths.length === 0) return;
+        const uploadedImages = [...this.pendingImages];
+        const uploadedFiles = [...this.pendingFiles];
+        if (
+            !markdown &&
+            referencedBlockIds.length === 0 &&
+            imagePaths.length === 0 &&
+            uploadedImages.length === 0 &&
+            uploadedFiles.length === 0
+        ) {
+            return;
+        }
 
         this.clear();
         this.opts.onSubmit({
             displayMarkdown: markdown,
             referencedBlockIds,
             imagePaths,
+            uploadedImages,
+            uploadedFiles,
         });
+    }
+
+    private formatBytes(bytes: number): string {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    private isTextLikeFile(file: File): boolean {
+        if (file.type.startsWith("text/")) return true;
+        if (
+            [
+                "application/json",
+                "application/xml",
+                "application/javascript",
+                "application/typescript",
+                "application/x-tex",
+                "application/x-sh",
+            ].includes(file.type)
+        ) {
+            return true;
+        }
+        return /\.(md|markdown|txt|csv|tsv|json|ya?ml|toml|ini|xml|html?|css|scss|less|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|c|cc|cpp|h|hpp|cs|php|sh|bash|ps1|sql|tex|bib|r|m|jl|lua|swift|dart|vue|svelte|log)$/i.test(
+            file.name,
+        );
+    }
+
+    private renderPendingAttachments(): void {
+        if (!this.attachmentsEl) return;
+        if (this.pendingImages.length === 0 && this.pendingFiles.length === 0) {
+            this.attachmentsEl.classList.add("fn__none");
+            this.attachmentsEl.innerHTML = "";
+            return;
+        }
+        this.attachmentsEl.classList.remove("fn__none");
+        const imgHtml = this.pendingImages
+            .map(
+                (img, idx) => `
+                <div class="lh-composer-thumb" title="${escapeHtml(img.path)}">
+                    <img src="${escapeHtml(img.dataUrl)}" alt="${escapeHtml(img.path)}" />
+                    <button type="button" class="lh-composer-thumb__rm" data-remove-img="${idx}" title="Remove image">×</button>
+                </div>
+            `,
+            )
+            .join("");
+
+        const fileHtml = this.pendingFiles
+            .map(
+                (f, idx) => `
+                <div class="lh-composer-file-chip" title="${escapeHtml(f.name)} (${this.formatBytes(f.size)})">
+                    ${FILE_CHIP_SVG}
+                    <span class="lh-composer-file-chip__name">${escapeHtml(f.name)}</span>
+                    <span class="lh-composer-file-chip__size">${this.formatBytes(f.size)}</span>
+                    <button type="button" class="lh-composer-file-chip__rm" data-remove-file="${idx}" title="Remove file">×</button>
+                </div>
+            `,
+            )
+            .join("");
+
+        this.attachmentsEl.innerHTML = `${imgHtml}${fileHtml}`;
+    }
+
+    private async addAttachedFiles(files: FileList | File[]): Promise<void> {
+        const MAX_TOTAL = 8;
+        const MAX_BYTES = 16 * 1024 * 1024;
+        const MAX_TEXT_CHARS = 28000;
+        const list = Array.from(files);
+        if (list.length === 0) return;
+
+        for (const file of list) {
+            if (this.pendingImages.length + this.pendingFiles.length >= MAX_TOTAL) {
+                showMessage(`Maximum ${MAX_TOTAL} attachments per message.`, 2500, "info");
+                break;
+            }
+            if (file.size > MAX_BYTES) {
+                showMessage(`File "${file.name}" is larger than 16 MB.`, 3000, "error");
+                continue;
+            }
+
+            if (file.type.startsWith("image/")) {
+                const dataUrl = await new Promise<string | null>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+                    reader.onerror = () => resolve(null);
+                    reader.readAsDataURL(file);
+                });
+                if (dataUrl) {
+                    this.pendingImages.push({
+                        path: file.name || `image-${Date.now()}.png`,
+                        dataUrl,
+                    });
+                }
+                continue;
+            }
+
+            if (this.isTextLikeFile(file)) {
+                try {
+                    let textContent = await file.text();
+                    if (textContent.length > MAX_TEXT_CHARS) {
+                        textContent = `${textContent.slice(0, MAX_TEXT_CHARS)}\n... [truncated at ${MAX_TEXT_CHARS} chars]`;
+                    }
+                    this.pendingFiles.push({
+                        name: file.name,
+                        mimeType: file.type || "text/plain",
+                        size: file.size,
+                        textContent,
+                    });
+                } catch {
+                    showMessage(`Could not read "${file.name}".`, 3000, "error");
+                }
+                continue;
+            }
+
+            // PDF or other binary document: read as dataUrl
+            const dataUrl = await new Promise<string | null>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+                reader.onerror = () => resolve(null);
+                reader.readAsDataURL(file);
+            });
+            this.pendingFiles.push({
+                name: file.name,
+                mimeType: file.type || "application/octet-stream",
+                size: file.size,
+                ...(dataUrl ? { dataUrl } : {}),
+            });
+        }
+
+        this.renderPendingAttachments();
+        this.syncEmptyState();
     }
 
     /** Insert a SiYuan block reference `((id "title"))` directly into the Protyle editor. */
@@ -612,7 +770,8 @@ export class SiYuanBlockInput {
             ),
         );
         const hasText = this.getPlainText().length > 0;
-        const isEmpty = !hasText && !hasBlockRef && !hasImage && !hasNonParagraphBlock;
+        const hasPendingAttachments = this.pendingImages.length > 0 || this.pendingFiles.length > 0;
+        const isEmpty = !hasText && !hasBlockRef && !hasImage && !hasNonParagraphBlock && !hasPendingAttachments;
 
         if (isEmpty) {
             this.protyleHostEl.classList.add("lh-composer-card__editor--empty");
@@ -717,6 +876,84 @@ export class SiYuanBlockInput {
             }
         });
 
+        // File picker change handler
+        this.fileInputEl.addEventListener("change", () => {
+            if (this.fileInputEl.files && this.fileInputEl.files.length > 0) {
+                void this.addAttachedFiles(this.fileInputEl.files);
+                this.fileInputEl.value = "";
+            }
+        });
+
+        // Remove pending image thumbnail or file chip
+        this.attachmentsEl.addEventListener("click", (e) => {
+            const rmImg = (e.target as HTMLElement).closest("[data-remove-img]") as HTMLElement | null;
+            if (rmImg) {
+                e.preventDefault();
+                e.stopPropagation();
+                const idx = Number(rmImg.dataset.removeImg);
+                if (!Number.isNaN(idx) && idx >= 0 && idx < this.pendingImages.length) {
+                    this.pendingImages.splice(idx, 1);
+                    this.renderPendingAttachments();
+                    this.syncEmptyState();
+                }
+                return;
+            }
+            const rmFile = (e.target as HTMLElement).closest("[data-remove-file]") as HTMLElement | null;
+            if (rmFile) {
+                e.preventDefault();
+                e.stopPropagation();
+                const idx = Number(rmFile.dataset.removeFile);
+                if (!Number.isNaN(idx) && idx >= 0 && idx < this.pendingFiles.length) {
+                    this.pendingFiles.splice(idx, 1);
+                    this.renderPendingAttachments();
+                    this.syncEmptyState();
+                }
+            }
+        });
+
+        // Paste files or images directly into the composer
+        this.cardEl.addEventListener(
+            "paste",
+            (e: ClipboardEvent) => {
+                const items = e.clipboardData?.items;
+                if (!items) return;
+                const pastedFiles: File[] = [];
+                for (const item of Array.from(items)) {
+                    if (item.kind === "file") {
+                        const f = item.getAsFile();
+                        if (f) pastedFiles.push(f);
+                    }
+                }
+                if (pastedFiles.length > 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void this.addAttachedFiles(pastedFiles);
+                }
+            },
+            true,
+        );
+
+        // Drag & drop any files or images onto the composer card
+        this.cardEl.addEventListener("dragover", (e: DragEvent) => {
+            if (e.dataTransfer?.types?.includes("Files")) {
+                e.preventDefault();
+                this.cardEl.classList.add("lh-composer-card--dragover");
+            }
+        });
+        this.cardEl.addEventListener("dragleave", (e: DragEvent) => {
+            if (!this.cardEl.contains(e.relatedTarget as Node)) {
+                this.cardEl.classList.remove("lh-composer-card--dragover");
+            }
+        });
+        this.cardEl.addEventListener("drop", (e: DragEvent) => {
+            this.cardEl.classList.remove("lh-composer-card--dragover");
+            const files = e.dataTransfer?.files;
+            if (!files || files.length === 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            void this.addAttachedFiles(files);
+        });
+
         // Footer pill and icon actions
         this.cardEl.addEventListener("click", (e) => {
             const btn = (e.target as HTMLElement).closest("[data-composer-action]") as HTMLElement | null;
@@ -724,9 +961,9 @@ export class SiYuanBlockInput {
             e.preventDefault();
             e.stopPropagation();
             const act = btn.dataset.composerAction;
-            if (act === "attach-note") {
+            if (act === "attach-file") {
                 this.closeModelMenu();
-                this.opts.onAttachActiveNote?.();
+                this.fileInputEl?.click();
             } else if (act === "toggle-mic") {
                 this.closeModelMenu();
                 void this.handleMicClick();

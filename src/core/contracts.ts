@@ -212,11 +212,20 @@ export interface NoteImageAttachment {
     dataUrl: string;
 }
 
+export interface UploadedFileAttachment {
+    name: string;
+    mimeType: string;
+    size: number;
+    textContent?: string;
+    dataUrl?: string;
+}
+
 export interface LhUserMessage {
     id: string;
     role: "user";
     content: string;
     images?: NoteImageAttachment[];
+    files?: UploadedFileAttachment[];
     timestamp: number;
 }
 

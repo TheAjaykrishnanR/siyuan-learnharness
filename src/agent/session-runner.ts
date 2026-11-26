@@ -13,6 +13,7 @@ import {
     type NoteImageAttachment,
     type SideNoteIntent,
     type SideNoteThread,
+    type UploadedFileAttachment,
 } from "../core/contracts";
 import { getGraph, type GraphDeps } from "../core/graph";
 import {
@@ -395,9 +396,14 @@ export class SessionRunner {
     }
 
     /** Send a learner user message and run the agent turn. */
-    public async sendUserMessage(chatId: string, text: string, images?: NoteImageAttachment[]): Promise<void> {
+    public async sendUserMessage(
+        chatId: string,
+        text: string,
+        images?: NoteImageAttachment[],
+        files?: UploadedFileAttachment[],
+    ): Promise<void> {
         const trimmed = text.trim();
-        if (!trimmed && (!images || images.length === 0)) return;
+        if (!trimmed && (!images || images.length === 0) && (!files || files.length === 0)) return;
         const record = this.deps.chatStore.getChat(chatId);
         if (!record) throw new Error(`Chat not found: ${chatId}`);
 
@@ -412,11 +418,17 @@ export class SessionRunner {
 
         // Auto-title on first user message
         const hasUserMsg = record.messages.some((m) => m.role === "user");
-        if (!hasUserMsg && (record.title === "New Learning Session" || record.title === "New Practice Session")) {
-            record.title = titleFromPrompt(trimmed);
+        if (
+            !hasUserMsg &&
+            (record.title === "New Chat" ||
+                record.title === "New Learning Session" ||
+                record.title === "New Practice Session")
+        ) {
+            const fallbackTitle = files?.[0]?.name || (images?.length ? "Image question" : "New Chat");
+            record.title = titleFromPrompt(trimmed || fallbackTitle);
         }
 
-        record.messages.push(newUserMessage(trimmed, images));
+        record.messages.push(newUserMessage(trimmed, images, files));
         this.deps.chatStore.saveChat(record);
         this.emit(chatId);
 

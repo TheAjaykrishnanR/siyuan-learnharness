@@ -14,6 +14,7 @@ import {
     type LhUserMessage,
     type NoteImageAttachment,
     type Phase3,
+    type UploadedFileAttachment,
 } from "./contracts";
 import { QUESTION_TOOLS, compactAnswerForModel, type QuestionAnswerData } from "./question-core";
 import { randomHex } from "./schema";
@@ -28,12 +29,17 @@ export function newMessageId(): string {
     return `msg_${Date.now().toString(36)}_${randomHex(4)}`;
 }
 
-export function newUserMessage(text: string, images?: NoteImageAttachment[]): LhUserMessage {
+export function newUserMessage(
+    text: string,
+    images?: NoteImageAttachment[],
+    files?: UploadedFileAttachment[],
+): LhUserMessage {
     return {
         id: newMessageId(),
         role: "user",
         content: text,
         ...(images && images.length > 0 ? { images } : {}),
+        ...(files && files.length > 0 ? { files } : {}),
         timestamp: Date.now(),
     };
 }

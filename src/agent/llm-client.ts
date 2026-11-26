@@ -9,6 +9,7 @@ import type {
     AssistantContentBlock,
     LhAssistantMessage,
     LhMessage,
+    UploadedFileAttachment,
 } from "../core/contracts";
 import { INTERRUPTED_TEXT, newMessageId, resultIdsFrom } from "../core/messages";
 import type { PluginSettings, ProviderId } from "../core/ports";
@@ -258,7 +259,8 @@ interface WireToolCall {
 
 type WireContentPart =
     | { type: "text"; text: string }
-    | { type: "image_url"; image_url: { url: string } };
+    | { type: "image_url"; image_url: { url: string } }
+    | { type: "file"; file: { filename: string; file_data: string } };
 
 interface WireMessage {
     role: "system" | "user" | "assistant" | "tool";
@@ -279,14 +281,41 @@ function buildUserContent(
     text: string,
     images: ReadonlyArray<{ path: string; dataUrl: string }> | undefined,
     includeImages: boolean,
+    files?: ReadonlyArray<UploadedFileAttachment>,
 ): string | WireContentPart[] {
-    if (!includeImages || !images || images.length === 0) return text;
-    const parts: WireContentPart[] = [{ type: "text", text }];
-    for (const img of images) {
-        parts.push({ type: "text", text: `[Attached image: ${img.path}]` });
-        parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+    const hasImages = includeImages && images && images.length > 0;
+    const hasFiles = files && files.length > 0;
+    if (!hasImages && !hasFiles) return text;
+
+    const parts: WireContentPart[] = [];
+    if (text) parts.push({ type: "text", text });
+
+    if (hasFiles) {
+        for (const f of files) {
+            if (f.textContent !== undefined) {
+                parts.push({
+                    type: "text",
+                    text: `[Attached file: ${f.name}]\n\`\`\`\n${f.textContent}\n\`\`\``,
+                });
+            } else if (f.dataUrl && includeImages && (f.mimeType === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"))) {
+                parts.push({ type: "text", text: `[Attached PDF: ${f.name}]` });
+                parts.push({ type: "file", file: { filename: f.name, file_data: f.dataUrl } });
+            } else {
+                parts.push({
+                    type: "text",
+                    text: `[Attached file: ${f.name} (${f.mimeType || "binary"}, ${Math.round(f.size / 1024)} KB)]`,
+                });
+            }
+        }
     }
-    return parts;
+
+    if (hasImages) {
+        for (const img of images) {
+            parts.push({ type: "text", text: `[Attached image: ${img.path}]` });
+            parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+        }
+    }
+    return parts.length > 0 ? parts : text;
 }
 
 /** Convert LhMessage[] history + systemPrompt into OpenAI-compatible wire messages. */
@@ -312,7 +341,7 @@ export function buildWireMessages(
             continue;
         }
         if (m.role === "user") {
-            out.push({ role: "user", content: buildUserContent(m.content, m.images, includeImages) });
+            out.push({ role: "user", content: buildUserContent(m.content, m.images, includeImages, m.files) });
             continue;
         }
         if (m.role === "toolResult") {

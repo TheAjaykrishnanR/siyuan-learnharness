@@ -16,9 +16,11 @@ import {
     type ChatRecord,
     type LhAssistantMessage,
     type LhToolResultMessage,
+    type NoteImageAttachment,
     type ProbeAssessment,
     type SideNoteIntent,
     type SideNoteThread,
+    type UploadedFileAttachment,
 } from "./core/contracts";
 import {
     activeProblemOf,
@@ -782,9 +784,28 @@ export class SidebarView {
             const m = chat.messages[i]!;
 
             if (m.role === "user") {
+                const imgsHtml =
+                    m.images && m.images.length > 0
+                        ? `<div class="lh-user-images">${m.images
+                              .map(
+                                  (img) =>
+                                      `<img class="lh-user-images__img" src="${escapeHtml(img.dataUrl)}" alt="${escapeHtml(img.path)}" title="${escapeHtml(img.path)}" />`,
+                              )
+                              .join("")}</div>`
+                        : "";
+                const filesHtml =
+                    m.files && m.files.length > 0
+                        ? `<div class="lh-user-files">${m.files
+                              .map(
+                                  (f) =>
+                                      `<span class="lh-user-files__chip" title="${escapeHtml(f.name)}">${ICON.doc}<span>${escapeHtml(f.name)}</span></span>`,
+                              )
+                              .join("")}</div>`
+                        : "";
+                const textHtml = m.content.trim() ? renderMarkdown(m.content) : "";
                 blocksHtml.push(`
                     <div class="lh-msg lh-msg--user">
-                        <div class="lh-msg__bubble b3-typography">${renderMarkdown(m.content)}</div>
+                        <div class="lh-msg__bubble b3-typography">${imgsHtml}${filesHtml}${textHtml}</div>
                     </div>
                 `);
                 continue;
@@ -1261,6 +1282,8 @@ export class SidebarView {
         displayMarkdown: string;
         referencedBlockIds: string[];
         imagePaths?: string[];
+        uploadedImages?: NoteImageAttachment[];
+        uploadedFiles?: UploadedFileAttachment[];
     }): Promise<void> {
         const chat = this.getActiveChat();
         if (!chat) return;
@@ -1301,9 +1324,16 @@ export class SidebarView {
         const userImagePaths = Array.from(
             new Set([...(payload.imagePaths ?? []), ...extractAssetImagePaths(payload.displayMarkdown)]),
         );
-        const userImages = userImagePaths.length > 0 ? await readSiyuanImages(userImagePaths, 12) : undefined;
+        const siyuanImages = userImagePaths.length > 0 ? await readSiyuanImages(userImagePaths, 12) : [];
+        const allImages = [...(payload.uploadedImages ?? []), ...siyuanImages];
+        const allFiles = payload.uploadedFiles ?? [];
 
-        await this.runner.sendUserMessage(chat.id, payload.displayMarkdown, userImages);
+        await this.runner.sendUserMessage(
+            chat.id,
+            payload.displayMarkdown,
+            allImages.length > 0 ? allImages : undefined,
+            allFiles.length > 0 ? allFiles : undefined,
+        );
     }
 
     private bindEvents(): void {
