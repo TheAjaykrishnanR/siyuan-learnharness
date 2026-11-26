@@ -25,13 +25,113 @@ export interface LayoutNode {
 
 export const LINK_DISTANCE = 55;
 export const CHARGE_STRENGTH = -260;
+export const DEPTH_SPACING = 76;
 const IMP_ID_PREFIX = "arg_";
 const ANCHOR_RETENTION = 0.85;
+
+export interface ImpLink {
+    id: string;
+    premises: ReadonlyArray<string>;
+    conclusion: string;
+}
 
 export interface IncrementalLayoutOptions {
     ticks?: number;
     anchorRetention?: number;
     clusters?: ReadonlyArray<{ members: ReadonlyArray<string> }>;
+    logicalEdges?: ReadonlyArray<LayoutEdge>;
+    impLinks?: ReadonlyArray<ImpLink>;
+    directional?: boolean;
+}
+
+/**
+ * Cycle-safe DAG inference depth per proposition node (0 = foundational premise at top,
+ * increasing downward toward derived conclusions). Uses iterative Tarjan SCC condensation
+ * so mutual-implication cycles share the same row cleanly.
+ */
+export function inferenceDepths(
+    nodes: ReadonlyArray<Pick<GraphNode, "id">>,
+    edges: ReadonlyArray<LayoutEdge>,
+): Map<string, number> {
+    const valid = new Set(nodes.map((n) => n.id));
+    const adj = new Map<string, string[]>();
+    for (const e of edges) {
+        if (e.from === e.to || !valid.has(e.from) || !valid.has(e.to)) continue;
+        let list = adj.get(e.from);
+        if (!list) adj.set(e.from, (list = []));
+        list.push(e.to);
+    }
+
+    const num = new Map<string, number>();
+    const low = new Map<string, number>();
+    const onStack = new Set<string>();
+    const stack: string[] = [];
+    const comp = new Map<string, number>();
+    let counter = 0;
+    let compCount = 0;
+
+    for (const start of valid) {
+        if (num.has(start)) continue;
+        num.set(start, counter);
+        low.set(start, counter);
+        counter++;
+        stack.push(start);
+        onStack.add(start);
+        const work: Array<[string, number]> = [[start, 0]];
+        while (work.length > 0) {
+            const frame = work[work.length - 1]!;
+            const v = frame[0];
+            const outs = adj.get(v) ?? [];
+            if (frame[1] < outs.length) {
+                const i = frame[1]++;
+                const w = outs[i]!;
+                if (!num.has(w)) {
+                    num.set(w, counter);
+                    low.set(w, counter);
+                    counter++;
+                    stack.push(w);
+                    onStack.add(w);
+                    work.push([w, 0]);
+                } else if (onStack.has(w)) {
+                    low.set(v, Math.min(low.get(v)!, num.get(w)!));
+                }
+            } else {
+                work.pop();
+                if (low.get(v) === num.get(v)) {
+                    let w: string;
+                    do {
+                        w = stack.pop()!;
+                        onStack.delete(w);
+                        comp.set(w, compCount);
+                    } while (w !== v);
+                    compCount++;
+                }
+                if (work.length > 0) {
+                    const parent = work[work.length - 1]![0];
+                    low.set(parent, Math.min(low.get(parent)!, low.get(v)!));
+                }
+            }
+        }
+    }
+
+    const preds: Set<number>[] = Array.from({ length: compCount }, () => new Set<number>());
+    for (const e of edges) {
+        const a = comp.get(e.from);
+        const b = comp.get(e.to);
+        if (a == null || b == null || a === b) continue;
+        preds[b]!.add(a);
+    }
+
+    const depth = new Array<number>(compCount).fill(0);
+    for (let c = compCount - 1; c >= 0; c--) {
+        let d = 0;
+        for (const p of preds[c]!) d = Math.max(d, depth[p]! + 1);
+        depth[c] = d;
+    }
+
+    const out = new Map<string, number>();
+    for (const n of nodes) out.set(n.id, depth[comp.get(n.id)!] ?? 0);
+    return out;
 }
 
 export function incrementalLayout(
@@ -123,6 +223,17 @@ export function incrementalLayout(
         for (const m of c.members) clusterIdx.set(m, idx);
     });
 
+    const directional = options.directional !== false;
+    const propNodes = nodes.filter((n) => !n.id.startsWith(IMP_ID_PREFIX));
+    const depthEdges = options.logicalEdges ?? edges;
+    const depths = directional ? inferenceDepths(propNodes, depthEdges) : new Map<string, number>();
+    let meanDepth = 0;
+    if (depths.size > 0) {
+        for (const d of depths.values()) meanDepth += d;
+        meanDepth /= depths.size;
+    }
+    const impLinks = options.impLinks ?? [];
+
     for (let tick = 0; tick < ticks; tick++) {
         const alpha = Math.pow(1 - tick / ticks, 1.3);
 
@@ -192,7 +303,40 @@ export function incrementalLayout(
             }
         }
 
-        // 4. Center gravity + integrate velocities
+        // 4. Top-to-bottom DAG depth force (premises above -> conclusions below) + junction midpoint pull
+        if (directional && depths.size > 0) {
+            for (const n of simNodes) {
+                if (n.id.startsWith(IMP_ID_PREFIX)) continue;
+                const d = depths.get(n.id);
+                if (d === undefined) continue;
+                const targetY = cy + (d - meanDepth) * DEPTH_SPACING;
+                n.vy += (targetY - n.y) * 0.22 * alpha;
+            }
+            for (const imp of impLinks) {
+                const jNode = byId.get(imp.id);
+                const cNode = byId.get(imp.conclusion);
+                if (!jNode || !cNode || imp.premises.length === 0) continue;
+                let px = 0,
+                    py = 0,
+                    pCount = 0;
+                for (const pid of imp.premises) {
+                    const pNode = byId.get(pid);
+                    if (pNode) {
+                        px += pNode.x;
+                        py += pNode.y;
+                        pCount++;
+                    }
+                }
+                if (pCount > 0) {
+                    const midX = 0.5 * (px / pCount + cNode.x);
+                    const midY = 0.5 * (py / pCount + cNode.y);
+                    jNode.vx += (midX - jNode.x) * 0.28 * alpha;
+                    jNode.vy += (midY - jNode.y) * 0.32 * alpha;
+                }
+            }
+        }
+
+        // 5. Center gravity + integrate velocities
         const gravity = hasCore ? 0.04 : 0.08;
         for (const n of simNodes) {
             if (n.fx != null && n.fy != null) {
@@ -203,7 +347,11 @@ export function incrementalLayout(
                 continue;
             }
             n.vx += (cx - n.x) * gravity * alpha;
-            n.vy += (cy - n.y) * gravity * alpha;
+            if (!directional) {
+                n.vy += (cy - n.y) * gravity * alpha;
+            } else {
+                n.vy += (cy - n.y) * (gravity * 0.25) * alpha;
+            }
             n.vx *= 0.6;
             n.vy *= 0.6;
             n.x += n.vx;

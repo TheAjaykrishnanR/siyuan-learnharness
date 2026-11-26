@@ -296,7 +296,7 @@ export class SiYuanHarnessStores {
         }
     }
 
-    public recomputeLayoutPositions(): void {
+    public recomputeLayoutPositions(fresh = false): void {
         const derived = getGraph(this.graphStore);
         const view = deriveView(derived);
         if (view.nodes.length === 0) return;
@@ -306,9 +306,12 @@ export class SiYuanHarnessStores {
             .map((c) => ({ id: c.id, members: [...c.members] }));
         attachImpToCommunities(communities, derived.nodes, derived.chains);
 
-        const prevMap = new Map<string, Position>(Object.entries(this.graph.positions));
+        const prevMap = fresh ? new Map<string, Position>() : new Map<string, Position>(Object.entries(this.graph.positions));
         const nextMap = incrementalLayout(view.nodes, view.edges, prevMap, {
             clusters: communities,
+            logicalEdges: view.logicalEdges,
+            impLinks: view.impLinks,
+            directional: true,
         });
         const nextObj: Record<string, Position> = {};
         for (const [id, pos] of nextMap) {

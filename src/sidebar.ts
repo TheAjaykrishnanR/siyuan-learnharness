@@ -42,7 +42,7 @@ import {
 import type { SiYuanHarnessStores } from "./store/siyuan-store";
 import { KnowledgeGraphView } from "./ui/graph-view";
 import { localStt } from "./ui/local-stt";
-import { escapeHtml, renderMarkdown } from "./ui/markdown";
+import { escapeHtml, renderInlineMarkdown, renderMarkdown } from "./ui/markdown";
 import { SiYuanBlockInput, type ModelPickerGroup } from "./ui/siyuan-block-input";
 
 const ICON = {
@@ -305,12 +305,14 @@ export class SidebarView {
                             <div class="lh-streaming-slot"></div>
                             <div class="lh-question-slot"></div>
                         </div>
+                    </div>
+
+                    <div class="lh-floating-footer">
                         <button type="button" class="lh-scroll-bottom-btn fn__none" data-action="scroll-to-bottom" title="Scroll to bottom" aria-label="Scroll to bottom">
                             <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M8 2.5a.75.75 0 0 1 .75.75v7.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 8 2.5z"/></svg>
                         </button>
+                        <div class="lh-composer-host"></div>
                     </div>
-
-                    <div class="lh-composer-host"></div>
                 </div>
 
                 <div class="lh-graph-drawer" style="display:none;"></div>
@@ -700,7 +702,7 @@ export class SidebarView {
             <div class="lh-plan-strip__bar" data-action="toggle-plan-strip">
                 <span class="lh-plan-strip__summary">
                     <span class="lh-plan-strip__icon">${ICON.plan}</span>
-                    <strong>${escapeHtml(currentTitle)}</strong>
+                    <strong>${renderInlineMarkdown(currentTitle)}</strong>
                     <span class="lh-plan-strip__count">${visitedCount}/${tree.nodes.length}</span>
                 </span>
                 <span class="lh-plan-strip__chevron">${this.planExpanded ? "▴" : "▾"}</span>
@@ -717,7 +719,7 @@ export class SidebarView {
                             return `
                                 <div class="lh-plan-strip__node lh-plan-strip__node--${st}">
                                     ${dot}
-                                    <span>${escapeHtml(n.title)}</span>
+                                    <span>${renderInlineMarkdown(n.title)}</span>
                                 </div>
                             `;
                         })
@@ -986,7 +988,7 @@ export class SidebarView {
         return `
             <div class="lh-qa-history ${statusMod}">
                 <div class="lh-qa-history__q b3-typography">${renderMarkdown(ans.questionText)}</div>
-                <div class="lh-qa-history__a"><strong>${badge}You:</strong> ${escapeHtml(selectedText)}</div>
+                <div class="lh-qa-history__a b3-typography"><strong>${badge}You:</strong> ${renderInlineMarkdown(selectedText)}</div>
                 ${
                     ans.explanation
                         ? `<div class="lh-qa-history__exp b3-typography">${renderMarkdown(ans.explanation)}</div>`
@@ -1909,7 +1911,7 @@ export class SidebarView {
             custom: `${ICON.ask}<span>Side-note</span>`,
         };
         const badgeHtml = intentLabels[sn.intent] ?? `${ICON.ask}<span>Side-note</span>`;
-        const shortQuote = sn.quote.length > 68 ? `${sn.quote.slice(0, 65)}...` : sn.quote;
+        const quoteHtml = renderInlineMarkdown(sn.quote);
         const replyCount = sn.entries.filter((e) => e.role === "assistant").length;
 
         if (sn.collapsed && !stream?.busy) {
@@ -1917,7 +1919,7 @@ export class SidebarView {
                 <div class="lh-sidenote lh-sidenote--collapsed" data-sidenote-id="${escapeHtml(sn.id)}">
                     <button type="button" class="lh-sidenote__pill" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Expand side-note">
                         <span class="lh-sidenote__badge">${badgeHtml}</span>
-                        <span class="lh-sidenote__pill-quote">"${escapeHtml(shortQuote)}"</span>
+                        <span class="lh-sidenote__pill-quote">"${quoteHtml}"</span>
                         <span class="lh-sidenote__pill-count">${replyCount} ${replyCount === 1 ? "reply" : "replies"} ▸</span>
                     </button>
                     <button type="button" class="lh-sidenote__icon-btn" data-sidenote-delete="${escapeHtml(sn.id)}" title="Dismiss side-note">×</button>
@@ -1932,7 +1934,7 @@ export class SidebarView {
                     return "";
                 }
                 if (entry.role === "user") {
-                    return `<div class="lh-sidenote__user">${escapeHtml(entry.text)}</div>`;
+                    return `<div class="lh-sidenote__user b3-typography">${renderInlineMarkdown(entry.text)}</div>`;
                 }
                 return `<div class="lh-sidenote__reply b3-typography">${renderMarkdown(entry.text)}</div>`;
             })
@@ -1956,7 +1958,7 @@ export class SidebarView {
                 <div class="lh-sidenote__header">
                     <button type="button" class="lh-sidenote__header-toggle" data-sidenote-toggle="${escapeHtml(sn.id)}" title="Collapse side-note">
                         <span class="lh-sidenote__badge">${badgeHtml}</span>
-                        <span class="lh-sidenote__quote">"${escapeHtml(shortQuote)}"</span>
+                        <span class="lh-sidenote__quote">"${quoteHtml}"</span>
                         <span class="lh-sidenote__chev">▾</span>
                     </button>
                     <div class="lh-sidenote__header-actions">

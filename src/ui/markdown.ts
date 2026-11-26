@@ -159,7 +159,10 @@ function renderTex(tex: string, displayMode: boolean): string {
  * then replace `$$...$$`, `\[...\]`, `\(...\)`, and `$...$` (including spaced `$ \frac{1}{2} $`)
  * with placeholders holding pre-rendered KaTeX HTML so Lute cannot mangle LaTeX.
  */
-function extractMathPlaceholders(input: string): { text: string; restore: (html: string) => string } {
+function extractMathPlaceholders(
+    input: string,
+    forceInline = false,
+): { text: string; restore: (html: string) => string } {
     const codeStash: string[] = [];
     const mathStash: string[] = [];
 
@@ -183,7 +186,7 @@ function extractMathPlaceholders(input: string): { text: string; restore: (html:
         const after = full.slice(offset + match.length);
         const lineStart = /(?:^|\n)[ \t]*$/.test(before);
         const lineEnd = /^[ \t]*(?:\r?\n|$)/.test(after);
-        const isStandalone = (lineStart && lineEnd) || tex.includes("\n");
+        const isStandalone = !forceInline && ((lineStart && lineEnd) || tex.includes("\n"));
         return stashMath(tex, isStandalone);
     });
     work = work.replace(/\\{1,2}\[([\s\S]+?)\\{1,2}\]/g, (match, tex: string, offset: number, full: string) => {
@@ -191,7 +194,7 @@ function extractMathPlaceholders(input: string): { text: string; restore: (html:
         const after = full.slice(offset + match.length);
         const lineStart = /(?:^|\n)[ \t]*$/.test(before);
         const lineEnd = /^[ \t]*(?:\r?\n|$)/.test(after);
-        const isStandalone = (lineStart && lineEnd) || tex.includes("\n");
+        const isStandalone = !forceInline && ((lineStart && lineEnd) || tex.includes("\n"));
         return stashMath(tex, isStandalone);
     });
 
@@ -282,4 +285,19 @@ export function renderMarkdown(md: string): string {
         })
         .join("\n");
     return fixAssetImgSrc(restoreMath(fallbackHtml));
+}
+
+/**
+ * Render single-line / badge / quote text with full universal KaTeX math healing,
+ * forcing all math inline (no block <div>/<p> wrappers) so it fits cleanly inside badges & headers.
+ */
+export function renderInlineMarkdown(text: string): string {
+    if (!text || !text.trim()) return "";
+    // Collapse newlines so standalone $$...$$ is rendered inline inside compact badges/quotes
+    const singleLine = text.replace(/\s+/g, " ").trim();
+    const { text: mathProtected, restore: restoreMath } = extractMathPlaceholders(singleLine, true);
+    const formatted = escapeHtml(mathProtected)
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/`([^`]+)`/g, "<code>$1</code>");
+    return restoreMath(formatted);
 }

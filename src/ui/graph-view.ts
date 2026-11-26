@@ -12,17 +12,18 @@ import { showMessage } from "siyuan";
 import { extractFromChat, importSiyuanNoteToGraph } from "../agent/extraction";
 import type { GraphNode, GraphSnapshot, Position } from "../core/contracts";
 import { chainsForSelection, formatChainLine, graphSnapshot } from "../core/graph";
-import { CHARGE_STRENGTH, LINK_DISTANCE } from "../core/layout";
+import { CHARGE_STRENGTH, DEPTH_SPACING, inferenceDepths, LINK_DISTANCE } from "../core/layout";
 import { newGraphContextMessage } from "../core/messages";
 import { findNotes, type SiyuanDocEntry } from "../siyuan/client";
 import type { SiYuanHarnessStores } from "../store/siyuan-store";
-import { escapeHtml } from "./markdown";
+import { escapeHtml, renderInlineMarkdown, renderMarkdown } from "./markdown";
 
 const GRAPH_ICON = {
     search: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
     importNote: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>`,
     extract: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/></svg>`,
     relayout: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>`,
+    flowDown: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="4.5" r="2"/><circle cx="6.5" cy="19.5" r="2"/><circle cx="17.5" cy="19.5" r="2"/><path d="M12 6.5v5"/><path d="M12 11.5 7.5 17"/><path d="m12 11.5 4.5 5.5"/></svg>`,
     center: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>`,
     trash: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="13" height="13"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>`,
 };
@@ -98,6 +99,10 @@ export class KnowledgeGraphView {
     private simById = new Map<string, SimNode>();
     private simLinks: SimLink[] = [];
     private neighborsById = new Map<string, Set<string>>();
+    private nodeDepths = new Map<string, number>();
+    private meanDepth = 0;
+    private directionalFlow = true;
+    private flowBtnEl!: HTMLButtonElement;
 
     private searchQuery = "";
     private selectedNodeId: string | null = null;
@@ -169,6 +174,9 @@ export class KnowledgeGraphView {
                             <button type="button" class="lh-header-icon-btn" data-action="import-note" title="Import a SiYuan note to Knowledge Graph">
                                 ${GRAPH_ICON.importNote}
                             </button>
+                            <button type="button" class="lh-header-icon-btn lh-flow-toggle-btn lh-icon-active" data-action="toggle-flow" title="Top-to-bottom derivation flow (click for free layout)">
+                                ${GRAPH_ICON.flowDown}
+                            </button>
                             <button type="button" class="lh-header-icon-btn" data-action="relayout" title="Re-relax layout">
                                 ${GRAPH_ICON.relayout}
                             </button>
@@ -202,6 +210,7 @@ export class KnowledgeGraphView {
         this.inspectorEl = this.container.querySelector(".lh-graph-card") as HTMLElement;
         this.searchInputEl = this.container.querySelector(".lh-graph-hud__input") as HTMLInputElement;
         this.toolbarStatusEl = this.container.querySelector(".lh-graph-status-pill") as HTMLElement;
+        this.flowBtnEl = this.container.querySelector(".lh-flow-toggle-btn") as HTMLButtonElement;
 
         this.bindEvents();
         this.refresh();
@@ -210,9 +219,8 @@ export class KnowledgeGraphView {
             const ok = this.resizeCanvas();
             if (ok && !this.hasAutoCentered && this.simNodes.length > 0) {
                 this.hasAutoCentered = true;
+                this.reheatSim(0.65);
                 this.fitView(false);
-                // Give a gentle fluid settle breath on first reveal
-                this.reheatSim(0.22);
             } else {
                 this.refreshFitReference();
                 this.markDirty();
@@ -252,8 +260,8 @@ export class KnowledgeGraphView {
         const ok = this.resizeCanvas();
         if (ok && this.simNodes.length > 0 && !this.hasAutoCentered) {
             this.hasAutoCentered = true;
+            this.reheatSim(0.65);
             this.fitView(false);
-            this.reheatSim(0.2);
         } else {
             this.refreshFitReference();
             this.markDirty();
@@ -262,6 +270,13 @@ export class KnowledgeGraphView {
     }
 
     private rebuildSimulationGraph(): void {
+        this.nodeDepths = inferenceDepths(this.snapshot.propositions, this.snapshot.logicalEdges);
+        this.meanDepth = 0;
+        if (this.nodeDepths.size > 0) {
+            for (const d of this.nodeDepths.values()) this.meanDepth += d;
+            this.meanDepth /= this.nodeDepths.size;
+        }
+
         const prevPos = new Map<string, { x: number; y: number }>();
         for (const n of this.simNodes) prevPos.set(n.id, { x: n.x, y: n.y });
         if (this.snapshot.positions) {
@@ -284,12 +299,17 @@ export class KnowledgeGraphView {
             const known = prevPos.get(n.id);
             const angle = idx * 2.39996323; // golden-angle spiral fallback
             const r = 35 + Math.sqrt(idx + 1) * 28;
+            const d = this.nodeDepths.get(n.id);
+            const fallbackY =
+                this.directionalFlow && d !== undefined
+                    ? (d - this.meanDepth) * DEPTH_SPACING
+                    : Math.sin(angle) * r;
             const sn: SimNode = {
                 id: n.id,
                 label: n.name,
                 isImp: n.id.startsWith("arg_"),
                 x: known ? known.x : Math.cos(angle) * r,
-                y: known ? known.y : Math.sin(angle) * r,
+                y: known ? known.y : fallbackY,
                 vx: 0,
                 vy: 0,
                 fx: null,
@@ -407,13 +427,23 @@ export class KnowledgeGraphView {
                 void this.extractActiveChat();
             } else if (action === "import-note" || action === "import-note-empty") {
                 void this.openImportNoteModal();
+            } else if (action === "toggle-flow") {
+                this.directionalFlow = !this.directionalFlow;
+                this.flowBtnEl?.classList.toggle("lh-icon-active", this.directionalFlow);
+                if (this.flowBtnEl) {
+                    this.flowBtnEl.title = this.directionalFlow
+                        ? "Top-to-bottom derivation flow (click for free layout)"
+                        : "Free organic layout (click for top-to-bottom derivation flow)";
+                }
+                this.reheatSim(0.9);
             } else if (action === "relayout") {
-                // Re-seed gently and let the live physics visibly relax the graph!
-                this.stores.recomputeLayoutPositions();
+                // Re-compute fresh directional hierarchy and visibly relax the graph!
+                this.stores.recomputeLayoutPositions(true);
                 this.snapshot = graphSnapshot({
                     chatStore: this.stores.chatStore,
                     graphStore: this.stores.graphStore,
                 });
+                this.simNodes = [];
                 this.rebuildSimulationGraph();
                 this.fitView(true);
                 this.reheatSim(0.85);
@@ -754,7 +784,40 @@ export class KnowledgeGraphView {
             }
         }
 
-        // 4. Gentle center gravity + velocity integration
+        // 4. Top-to-bottom DAG depth flow (foundational premises at top -> conclusions downward) + junction midpoint pull
+        if (this.directionalFlow && this.nodeDepths.size > 0) {
+            for (const n of nodes) {
+                if (n.isImp) continue;
+                const d = this.nodeDepths.get(n.id);
+                if (d === undefined) continue;
+                const targetY = cy + (d - this.meanDepth) * DEPTH_SPACING;
+                n.vy += (targetY - n.y) * 0.2 * alpha;
+            }
+            for (const imp of this.snapshot.impLinks) {
+                const jNode = this.simById.get(imp.id);
+                const cNode = this.simById.get(imp.conclusion);
+                if (!jNode || !cNode || imp.premises.length === 0) continue;
+                let px = 0,
+                    py = 0,
+                    pCount = 0;
+                for (const pid of imp.premises) {
+                    const pNode = this.simById.get(pid);
+                    if (pNode) {
+                        px += pNode.x;
+                        py += pNode.y;
+                        pCount++;
+                    }
+                }
+                if (pCount > 0) {
+                    const midX = 0.5 * (px / pCount + cNode.x);
+                    const midY = 0.5 * (py / pCount + cNode.y);
+                    jNode.vx += (midX - jNode.x) * 0.28 * alpha;
+                    jNode.vy += (midY - jNode.y) * 0.32 * alpha;
+                }
+            }
+        }
+
+        // 5. Gentle center gravity + velocity integration
         for (const n of nodes) {
             if (n.fx !== null && n.fy !== null) {
                 n.x = n.fx;
@@ -764,7 +827,7 @@ export class KnowledgeGraphView {
                 continue;
             }
             n.vx += (cx - n.x) * 0.025 * alpha;
-            n.vy += (cy - n.y) * 0.025 * alpha;
+            n.vy += (cy - n.y) * (this.directionalFlow ? 0.006 : 0.025) * alpha;
             n.vx *= 0.62;
             n.vy *= 0.62;
             if (Math.abs(n.vx) > 0.002 || Math.abs(n.vy) > 0.002) {
@@ -1150,14 +1213,14 @@ export class KnowledgeGraphView {
             items && items.length > 0
                 ? `<div class="lh-inspector-section">
                        <div class="lh-inspector-subtitle">${escapeHtml(label)}</div>
-                       ${items.map((x) => `<div class="lh-chain-card">${escapeHtml(x)}</div>`).join("")}
+                       ${items.map((x) => `<div class="lh-chain-card b3-typography">${renderMarkdown(x)}</div>`).join("")}
                    </div>`
                 : "";
 
         this.inspectorEl.classList.remove("fn__none");
         this.inspectorEl.innerHTML = `
             <div class="lh-graph-card__header">
-                <div class="lh-inspector-node-name">${escapeHtml(node.name)}</div>
+                <div class="lh-inspector-node-name">${renderInlineMarkdown(node.name)}</div>
                 <div class="lh-inspector-actions">
                     <button type="button" class="lh-sidenote__mini-btn" data-action="toggle-practice-node" data-node-id="${escapeHtml(node.id)}">
                         ${isPicked ? "✓ Selected" : "+ Select"}
@@ -1172,7 +1235,7 @@ export class KnowledgeGraphView {
                 </div>
             </div>
             <div class="lh-graph-card__body">
-                <div class="lh-inspector-node-stmt">${escapeHtml(node.statement)}</div>
+                <div class="lh-inspector-node-stmt b3-typography">${renderMarkdown(node.statement)}</div>
                 ${renderCognitiveNotes("Mental Framings", node.mentalFramings)}
                 ${renderCognitiveNotes("Misconceptions Repaired", node.misconceptions)}
                 ${renderCognitiveNotes("Fragility Notes", node.fragilityNotes)}
@@ -1180,7 +1243,7 @@ export class KnowledgeGraphView {
                     incomingChains.length > 0
                         ? `<div class="lh-inspector-section">
                                <div class="lh-inspector-subtitle">Derived From (${incomingChains.length})</div>
-                               ${incomingChains.map((c) => `<div class="lh-chain-card">${escapeHtml(formatChainLine(c, namesById))}</div>`).join("")}
+                               ${incomingChains.map((c) => `<div class="lh-chain-card">${renderInlineMarkdown(formatChainLine(c, namesById))}</div>`).join("")}
                            </div>`
                         : ""
                 }
@@ -1188,7 +1251,7 @@ export class KnowledgeGraphView {
                     outgoingChains.length > 0
                         ? `<div class="lh-inspector-section">
                                <div class="lh-inspector-subtitle">Supports (${outgoingChains.length})</div>
-                               ${outgoingChains.map((c) => `<div class="lh-chain-card">${escapeHtml(formatChainLine(c, namesById))}</div>`).join("")}
+                               ${outgoingChains.map((c) => `<div class="lh-chain-card">${renderInlineMarkdown(formatChainLine(c, namesById))}</div>`).join("")}
                            </div>`
                         : ""
                 }
