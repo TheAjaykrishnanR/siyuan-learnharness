@@ -243,7 +243,8 @@ export function renderMarkdown(md: string): string {
         },
     );
 
-    // Transform SiYuan block references ((id "anchor")) / ((id 'anchor')) / ((id)) into interactive pills
+    // Transform SiYuan block references ((id "anchor")) / ((id 'anchor')) / ((id)) into interactive glass pills
+    const docIconSvg = `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
     const withBlockRefs = processed.replace(
         /\(\((\d{14}-[a-z0-9]{7})(?:\s+(?:"([^"]+)"|'([^']+)'))?\)\)/gi,
         (_m, blockId, dqAnchor, sqAnchor) => {
@@ -252,7 +253,7 @@ export function renderMarkdown(md: string): string {
                 blockId,
             )}" data-block-ref-id="${escapeHtml(blockId)}" title="SiYuan Block (${escapeHtml(
                 blockId,
-            )}) — Click to open, hover to preview">📄 ${escapeHtml(label)}</span>`;
+            )}) — Click to open, hover to preview">${docIconSvg}<span>${escapeHtml(label)}</span></span>`;
         },
     );
 

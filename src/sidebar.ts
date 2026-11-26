@@ -63,6 +63,9 @@ const ICON = {
     minimize: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M5 12h14"/></svg>`,
     back: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="15" height="15"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>`,
     chevron: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><polyline points="6 9 12 15 18 9"/></svg>`,
+    doc: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+    image: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+    thought: `<svg class="lh-svg-icon" viewBox="0 0 24 24" width="12" height="12"><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/><path d="M9 21h6"/></svg>`,
 };
 
 export interface SidebarCallbacks {
@@ -796,15 +799,15 @@ export class SidebarView {
                     if (details.docId) {
                         const imgBadge =
                             details.images && details.images.length > 0
-                                ? ` · 🖼 ${details.images.length}`
+                                ? `<span class="lh-block-ref__meta">${ICON.image}${details.images.length}</span>`
                                 : "";
                         blocksHtml.push(`
                             <div class="lh-inline-note">
                                 <span class="lh-block-ref" data-action="open-siyuan-doc" data-doc-id="${escapeHtml(
                                     details.docId,
-                                )}" data-block-ref-id="${escapeHtml(details.docId)}">📄 ${escapeHtml(
+                                )}" data-block-ref-id="${escapeHtml(details.docId)}">${ICON.doc}<span>${escapeHtml(
                             details.title || details.hPath || details.docId,
-                        )}${imgBadge}</span>
+                        )}</span>${imgBadge}</span>
                             </div>
                         `);
                     }
@@ -849,7 +852,7 @@ export class SidebarView {
             if (block.type === "thinking" && block.thinking.trim()) {
                 parts.push(`
                     <details class="lh-subtle-pill">
-                        <summary>Reasoning</summary>
+                        <summary>${ICON.thought}<span>Reasoning</span></summary>
                         <div class="lh-subtle-pill__body">${escapeHtml(block.thinking)}</div>
                     </details>
                 `);

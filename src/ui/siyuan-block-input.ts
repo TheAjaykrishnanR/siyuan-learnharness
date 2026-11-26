@@ -215,7 +215,6 @@ export class SiYuanBlockInput {
 
         this.refreshPills();
         this.initProtyle();
-        this.syncBackgroundGridFromWorkspace();
         this.bindEvents();
     }
 
@@ -304,7 +303,6 @@ export class SiYuanBlockInput {
                 },
                 after: (p) => {
                     this.ensureEditableProtyle(p, rootId);
-                    this.syncBackgroundGridFromWorkspace();
                 },
             });
             this.ensureEditableProtyle(this.protyleInstance, rootId);

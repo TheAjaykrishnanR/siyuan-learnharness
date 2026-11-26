@@ -973,7 +973,9 @@ export class KnowledgeGraphView {
             ctx.strokeStyle = isDirectFocus ? primaryColor : mutedColor;
             ctx.lineWidth = isDirectFocus ? 1.4 : 1.0;
 
-            const targetR = t.isImp ? 0 : Math.max(3.2, Math.min(7.5, 4.2 * this.zoom)) + 1.5;
+            const targetR = t.isImp
+                ? Math.max(2.6, 3.2 * Math.sqrt(this.zoom)) + 1
+                : Math.max(3.2, Math.min(7.5, 4.2 * this.zoom)) + 1.5;
             const endX = s2.x - (dx / len) * targetR;
             const endY = s2.y - (dy / len) * targetR;
 
@@ -982,7 +984,7 @@ export class KnowledgeGraphView {
             ctx.lineTo(endX, endY);
             ctx.stroke();
 
-            // Implication junctions are invisible pure geometry: co-premise shafts converge headless; single arrow leaves to conclusion
+            // Single arrow leaves to conclusion (co-premise lines converge onto the hollow diamond junction)
             if (!t.isImp && len > targetR + 6) {
                 const angle = Math.atan2(dy, dx);
                 const headLen = Math.max(4.5, Math.min(7.5, 5.5 * Math.sqrt(this.zoom)));
@@ -1022,16 +1024,33 @@ export class KnowledgeGraphView {
             }
         }
 
-        // 4. Proposition Nodes (sleek Obsidian-sized discs)
+        // 4. Proposition Nodes + Multi-Premise AND-Junction Diamonds
         for (const node of this.simNodes) {
-            if (node.isImp) continue;
             if (!this.isNodeMatchingSearch(node)) continue;
-
             const scr = this.worldToScreen(node.x, node.y);
+            const inSpotlight = !focusSet || focusSet.has(node.id);
+
+            if (node.isImp) {
+                // Draw a crisp hollow diamond (◇) for multi-premise logical AND-junctions so converging edges read clearly
+                const jr = Math.max(2.6, Math.min(4.8, 3.1 * Math.sqrt(this.zoom)));
+                const isActiveJunction = focusId !== null && focusSet?.has(node.id);
+                ctx.globalAlpha = focusSet ? (isActiveJunction ? 0.9 : 0.14) : 0.5;
+                ctx.beginPath();
+                ctx.moveTo(scr.x, scr.y - jr);
+                ctx.lineTo(scr.x + jr, scr.y);
+                ctx.lineTo(scr.x, scr.y + jr);
+                ctx.lineTo(scr.x - jr, scr.y);
+                ctx.closePath();
+                ctx.strokeStyle = isActiveJunction ? primaryColor : mutedColor;
+                ctx.lineWidth = 1.2;
+                ctx.stroke();
+                continue;
+            }
+
             const isSelected = this.selectedNodeId === node.id;
+
             const isHovered = this.hoverId === node.id;
             const isPicked = this.practiceSelection.has(node.id);
-            const inSpotlight = !focusSet || focusSet.has(node.id);
 
             const degreeBoost = Math.min(2.2, Math.sqrt(node.degree) * 0.55);
             const baseR = (3.6 + degreeBoost) * Math.max(0.75, Math.min(1.45, Math.sqrt(this.zoom)));
